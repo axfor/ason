@@ -103,8 +103,9 @@ const (
 	rtPrefix
 )
 
-// internKeysMax 是 key 驻留表的上限：正常文档的不同 key 远少于此，对抗性输入（海量不同 key）不会让表无限增长。
-const internKeysMax = 4096
+// keyCacheSize 是 key 驻留缓存的槽数：直接映射、固定 4KB，与文档里不同 key 的数量无关；
+// 重复出现的 key（正常文档里绝大多数派发）不再分配，海量不同 key 的对抗性输入也不会让它增长。
+const keyCacheSize = 256
 
 // CommitBytes 是提交点窗口：扫描这么多输入字节之前不下发任何输出。
 // 越过之前判定不支持，调用方仍持有全部原始字节，可以干净回落。
@@ -138,8 +139,8 @@ type Transformer struct {
 	wsRaw       []byte
 	elemWs      []byte
 	rootCloseWs []byte
-	tailWs      []byte            // 根对象之后的空白（如尾部换行）：Finish 时原样吐出
-	keys        map[string]string // key 驻留表：重复出现的 key 不再分配（上限 internKeysMax 个）
+	tailWs      []byte                // 根对象之后的空白（如尾部换行）：Finish 时原样吐出
+	keys        *[keyCacheSize]string // key 驻留缓存（直接映射，按 key 字节的哈希定位）
 
 	validateUTF8 bool
 	u8           utf8State
@@ -906,10 +907,10 @@ func (t *Transformer) valueStart(f *frame, kind ValueKind) bool {
 			return false
 		}
 	}
-	act := t.pend
+	act := &t.pend // 指针：Action 有一百多字节，按值传会在派发热路径上反复拷贝
 	t.pendSet = false
 	if act.kind == akProbe {
-		act = t.cur().OnStart(t, kind)
+		t.pend = t.cur().OnStart(t, kind)
 		if t.dead {
 			return false
 		}
@@ -918,7 +919,7 @@ func (t *Transformer) valueStart(f *frame, kind ValueKind) bool {
 }
 
 // apply 执行一个动作。
-func (t *Transformer) apply(f *frame, act Action, kind ValueKind) bool {
+func (t *Transformer) apply(f *frame, act *Action, kind ValueKind) bool {
 	isContainer := kind == KindObject || kind == KindArray
 	switch act.kind {
 	case akBail:
@@ -966,7 +967,7 @@ func (t *Transformer) apply(f *frame, act Action, kind ValueKind) bool {
 			t.BailErr(ErrUnsupported, "Inner requires a string value")
 			return false
 		}
-		level := act.level
+		level := int(act.level)
 		if level < 0 {
 			level = t.w.Level()
 		}
@@ -1060,7 +1061,7 @@ func (t *Transformer) regPop() regPhase {
 	return rOComma
 }
 
-func (t *Transformer) beginRegion(target regionTarget, act Action) {
+func (t *Transformer) beginRegion(target regionTarget, act *Action) {
 	t.regN = 0
 	t.regDeep = t.regDeep[:0]
 	t.regPh = rTop
@@ -1069,7 +1070,7 @@ func (t *Transformer) beginRegion(target regionTarget, act Action) {
 	t.regDepth = t.depth
 	t.regInner = act.inner
 	t.regSuf = act.suffix
-	t.regCap = act.cap
+	t.regCap = int(act.cap)
 	t.capBuf = t.capBuf[:0]
 }
 
@@ -1200,15 +1201,16 @@ func (t *Transformer) onKeyDone() {
 			return
 		}
 		key = k
-	} else if k, ok := t.keys[string(t.keyBuf)]; ok { // map 以 []byte 查找不分配
-		key = k
 	} else {
-		key = string(t.keyBuf)
 		if t.keys == nil {
-			t.keys = make(map[string]string, 32)
+			t.keys = new([keyCacheSize]string)
 		}
-		if len(t.keys) < internKeysMax {
-			t.keys[key] = key
+		slot := &t.keys[hashKey(t.keyBuf)&(keyCacheSize-1)]
+		if *slot == string(t.keyBuf) { // 比较不分配
+			key = *slot
+		} else {
+			key = string(t.keyBuf)
+			*slot = key
 		}
 	}
 	f := t.top()
@@ -1382,6 +1384,15 @@ func (t *Transformer) scanStrUTF8(p []byte, i int) int {
 		}
 	}
 	return i
+}
+
+// hashKey 是 key 字节的 FNV-1a 哈希（key 通常很短，比通用 map 的哈希与探测便宜）。
+func hashKey(b []byte) uint32 {
+	h := uint32(2166136261)
+	for _, c := range b {
+		h = (h ^ uint32(c)) * 16777619
+	}
+	return h
 }
 
 // decodeKey 解码带转义的 key。独立成函数是为了不让 onKeyDone 里的 key 变量因取地址而逃逸到堆上。
