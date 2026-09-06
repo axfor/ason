@@ -36,6 +36,33 @@ const (
 	phComma              // 期待 , 或闭合
 )
 
+// 区域内部的文法阶段：把"当前容器是对象还是数组"编码进阶段里，结构字符的合法性与后继阶段查表即得。
+type regPhase uint8
+
+const (
+	rErr     regPhase = iota // 查表结果：非法
+	rTop                     // 区域顶层，期待值（区域一开始）
+	rKey0                    // 对象刚打开：期待 key 或 }
+	rKey                     // 对象逗号之后：期待 key
+	rColon                   // key 之后：期待 :
+	rOValue                  // 冒号之后：期待值
+	rOComma                  // 对象里值之后：期待 , 或 }
+	rAValue0                 // 数组刚打开：期待值或 ]
+	rAValue                  // 数组逗号之后：期待值
+	rAComma                  // 数组里值之后：期待 , 或 ]
+)
+
+var (
+	// 字符串开头之后的阶段（key 或值）。
+	regAfterStr = [...]regPhase{rKey0: rColon, rKey: rColon, rOValue: rOComma, rAValue0: rAComma, rAValue: rAComma, rAComma: rErr}
+	// 标量 / 容器开头之后（容器再由 regPush 覆盖）。
+	regAfterVal = [...]regPhase{rOValue: rOComma, rAValue0: rAComma, rAValue: rAComma, rAComma: rErr}
+	// 逗号之后。
+	regAfterComma = [...]regPhase{rOComma: rKey, rAComma: rAValue}
+	// 能否闭合：0 = 不能（缺 key / 缺值 / 多余逗号），1 = 对象可闭合，2 = 数组可闭合。
+	regClose = [...]uint8{rKey0: 1, rOComma: 1, rAValue0: 2, rAComma: 2}
+)
+
 // frame 是一个 Enter 进来的容器（派发帧）。区域内部的容器不建帧，只计深度。
 type frame struct {
 	kind     frameKind
@@ -111,6 +138,11 @@ type Transformer struct {
 	tailWs      []byte            // 根对象之后的空白（如尾部换行）：Finish 时原样吐出
 	keys        map[string]string // key 驻留表：重复出现的 key 不再分配（上限 internKeysMax 个）
 
+	validateUTF8 bool
+	u8           utf8State
+	dup          DupKeys
+	root         RootKind
+
 	commit        int    // 提交点窗口；0 = CommitBytes
 	budget        int    // 所有缓冲之和的上限；0 = 不限
 	deferredBytes int    // 当前所有派发帧里 Defer 项占用的字节数
@@ -124,6 +156,12 @@ type Transformer struct {
 	regCap   int
 	regKey   string
 	capBuf   []byte
+	// 区域内部的文法状态：只在结构字符上更新，数据字节不经过它。与派发帧一样按 JSON 文法拒绝
+	// 括号种类不配、缺 key / 缺冒号 / 缺值、多余逗号——区域里的 JSON 同样必须是 encoding/json 会接受的。
+	regPh    regPhase
+	regN     int    // 区域内容器层数
+	regKinds uint64 // 前 64 层容器种类的位栈（1 = 数组），第 n 层在第 n 位
+	regDeep  []bool // 超过 64 层时的溢出栈（罕见）
 
 	wantRelease bool
 	releaseAt   int // 请求回放时所在的派发帧号：只在该帧的安全点消费，进入子帧不会误消费
@@ -143,6 +181,34 @@ func NewTransformer(p Protocol) *Transformer {
 }
 
 // ---- 对外：Guard 语义 ----
+
+// DupKeys 是派发帧里重复 key 的策略。
+type DupKeys uint8
+
+const (
+	DupKeysPass  DupKeys = iota // 默认：不检查，重复的 key 照常派发（透传语义）
+	DupKeysBail                 // 判定不支持（目标是 struct 语义、后者覆盖前者、流式无法复刻时）
+	DupKeysFirst                // 只派发第一个，后面的同名 key 自动 Skip（gjson 取首个的语义）
+)
+
+// SetDupKeys 设置重复 key 策略（DupKeyBail 字段等价于 DupKeysBail，保留兼容）。
+func (t *Transformer) SetDupKeys(d DupKeys) { t.dup = d }
+
+// RootKind 是允许的根形状。
+type RootKind uint8
+
+const (
+	RootObject RootKind = iota // 默认
+	RootArray
+	RootAny // 对象或数组
+)
+
+// SetRoot 设置允许的根形状。根是数组时深度 1 是下标，经 OnElem 派发。
+func (t *Transformer) SetRoot(k RootKind) { t.root = k }
+
+// SetValidateUTF8 开启字符串与 key 的 UTF-8 校验（RFC 3629：拒绝过长编码、代理对、超出 U+10FFFF、
+// 孤立或缺失的续字节，含跨块的序列）。默认关闭——encoding/json 不拒绝非法 UTF-8，只替换。
+func (t *Transformer) SetValidateUTF8(on bool) { t.validateUTF8 = on }
 
 // SetCommitBytes 设置本转换器的提交点窗口（0 恢复包默认 CommitBytes）。必须在第一次 Write 之前调用。
 func (t *Transformer) SetCommitBytes(n int) { t.commit = n }
@@ -402,7 +468,15 @@ scan:
 				i++
 				continue
 			}
-			j := scanStringBody(p, i)
+			var j int
+			if t.validateUTF8 {
+				j = t.scanStrUTF8(p, i)
+				if t.dead {
+					continue
+				}
+			} else {
+				j = scanStringBody(p, i)
+			}
 			if j == len(p) {
 				i = j
 				continue
@@ -455,7 +529,18 @@ scan:
 				i++
 				continue
 			}
-			if j := scanStringBody(p, i); j > i { // 普通字节成段追加
+			if t.validateUTF8 {
+				j := t.scanStrUTF8(p, i)
+				if t.dead {
+					continue
+				}
+				if j > i {
+					t.keyBuf = append(t.keyBuf, p[i:j]...)
+					t.kvRaw = append(t.kvRaw, p[i:j]...)
+					i = j
+					continue
+				}
+			} else if j := scanStringBody(p, i); j > i { // 普通字节成段追加
 				t.keyBuf = append(t.keyBuf, p[i:j]...)
 				t.kvRaw = append(t.kvRaw, p[i:j]...)
 				i = j
@@ -524,8 +609,10 @@ scan:
 				continue
 			}
 			if t.regOpen {
-				// 区域内部：只跟踪结构，不派发。紧凑循环一口气吃掉结构字符与空白，
-				// 只在进入字符串 / 标量或区域闭合时回到外层状态机。
+				// 区域内部：只跟踪文法，不派发。紧凑循环一口气吃掉结构字符与空白，
+				// 只在进入字符串 / 标量或区域闭合时回到外层状态机。文法阶段放在局部变量里，退出时写回；
+				// 阶段本身编码了当前容器的种类，逗号 / 冒号 / 字符串 / 标量都不用查栈，栈只在括号处动。
+				ph := t.regPh
 				for i < len(p) {
 					c = p[i]
 					if jsonSpace[c] {
@@ -534,36 +621,71 @@ scan:
 					}
 					switch c {
 					case '"':
+						if ph = regAfterStr[ph]; ph == rErr {
+							t.Bail("意外的字符串")
+							continue scan
+						}
+						t.regPh = ph
 						t.st = sInStr
 						t.esc = false
 						i++
 						continue scan
 					case '{', '[':
+						if regAfterVal[ph] == rErr {
+							t.Bail("意外的容器")
+							continue scan
+						}
 						t.depth++
+						t.regPush(c == '[')
+						ph = t.regPh
 					case '}', ']':
+						k := regClose[ph]
+						if k == 0 {
+							t.Bail("容器闭合前缺少值或有多余逗号")
+							continue scan
+						}
+						if (c == ']') != (k == 2) {
+							t.Bail("括号不匹配")
+							continue scan
+						}
+						ph = t.regPop()
 						t.depth--
 						if t.depth == t.regDepth {
+							t.regPh = ph
 							rs = t.flush(p, rs, i+1)
 							t.endRegion()
 							t.afterValue()
 							i++
 							continue scan
-						} else if t.depth < t.regDepth {
-							t.Bail("JSON 结构不平衡")
+						}
+					case ',':
+						if ph = regAfterComma[ph]; ph == rErr {
+							t.Bail("意外的逗号")
 							continue scan
 						}
-					case ',', ':':
+					case ':':
+						if ph != rColon {
+							t.Bail("意外的冒号")
+							continue scan
+						}
+						ph = rOValue
 					default:
+						if ph = regAfterVal[ph]; ph == rErr {
+							t.Bail("意外的标量")
+							continue scan
+						}
 						if !t.lit.start(c) {
 							t.Bail("非法字符")
 							continue scan
 						}
+						t.regPh = ph
 						t.st = sInScalar
 						i++
 						continue scan
 					}
 					i++
 				}
+				t.regPh = ph
 				continue
 			}
 			if t.rootDone {
@@ -573,15 +695,20 @@ scan:
 			f := t.top()
 			if f == nil {
 				// 根
-				if c != '{' {
-					t.Bail("根不是 JSON 对象")
+				isArr := c == '['
+				if (c == '{' && t.root == RootArray) || (isArr && t.root == RootObject) || (c != '{' && c != '[') {
+					t.Bail("根不是允许的形状")
 					continue
 				}
 				t.rootSeen = true
 				t.depth = 1
-				t.pushFrame(frame{kind: fkObj, ph: phKey, idx: -1})
+				if isArr {
+					t.pushFrame(frame{kind: fkArr, ph: phValue, idx: -1})
+				} else {
+					t.pushFrame(frame{kind: fkObj, ph: phKey, idx: -1})
+				}
 				t.w.buf = append(t.w.buf, t.leadWs...) // 根之前的空白保真
-				t.w.push("", nil, false)
+				t.w.push("", nil, isArr)
 				t.wsRaw = t.wsRaw[:0]
 				i++
 				continue
@@ -664,6 +791,7 @@ scan:
 				}
 				if t.regOpen {
 					rs = i
+					t.regPush(kind == KindArray)
 				}
 				t.depth++
 				i++
@@ -836,7 +964,50 @@ func (t *Transformer) apply(f *frame, act Action, kind ValueKind) bool {
 	return false
 }
 
+// regPush 区域内进入一层容器：记下种类，文法阶段切到"期待 key / 期待值"。
+func (t *Transformer) regPush(isArr bool) {
+	t.regN++
+	if t.regN <= 64 {
+		bit := uint64(1) << uint(t.regN-1)
+		if isArr {
+			t.regKinds |= bit
+		} else {
+			t.regKinds &^= bit
+		}
+	} else {
+		t.regDeep = append(t.regDeep, isArr)
+	}
+	if isArr {
+		t.regPh = rAValue0
+	} else {
+		t.regPh = rKey0
+	}
+}
+
+// regPop 区域内闭合一层容器，返回回到父层后的阶段（父层是对象则期待 , 或 }，是数组则期待 , 或 ]）。
+func (t *Transformer) regPop() regPhase {
+	t.regN--
+	n := t.regN
+	if n == 0 {
+		return rTop
+	}
+	var parentArr bool
+	if n <= 64 {
+		parentArr = t.regKinds>>uint(n-1)&1 == 1
+	} else {
+		t.regDeep = t.regDeep[:n-64]
+		parentArr = t.regDeep[n-65]
+	}
+	if parentArr {
+		return rAComma
+	}
+	return rOComma
+}
+
 func (t *Transformer) beginRegion(target regionTarget, act Action) {
+	t.regN = 0
+	t.regDeep = t.regDeep[:0]
+	t.regPh = rTop
 	t.regOpen = true
 	t.regT = target
 	t.regDepth = t.depth
@@ -979,14 +1150,26 @@ func (t *Transformer) onKeyDone() {
 		}
 	}
 	f := t.top()
-	if t.DupKeyBail {
+	if t.DupKeyBail || t.dup != DupKeysPass {
+		dup := false
 		for _, s := range f.seen {
 			if s == key {
-				t.Bail("重复的 key: " + key)
-				return
+				dup = true
+				break
 			}
 		}
-		f.seen = append(f.seen, key)
+		if dup && (t.DupKeyBail || t.dup == DupKeysBail) {
+			t.Bail("重复的 key: " + key)
+			return
+		}
+		if !dup {
+			f.seen = append(f.seen, key)
+		} else { // DupKeysFirst：后面的同名 key 不派发，直接丢弃
+			t.path = append(t.path, seg{k: key, i: -1})
+			t.pend = Skip()
+			t.pendSet = true
+			return
+		}
 	}
 	t.path = append(t.path, seg{k: key, i: -1})
 	t.pend = t.cur().OnKey(t)
@@ -1085,6 +1268,57 @@ func (t *Transformer) replayKV(kv DeferredKV) {
 		t.scan([]byte{' '}) // 补一个分隔符收尾标量
 	}
 	t.wsRaw = t.wsRaw[:0] // 上面的补位空格不属于原文
+}
+
+// scanStrUTF8 开启 UTF-8 校验时的字符串体扫描：ASCII 段走 SWAR，≥ 0x80 的字节逐个过 RFC 3629 状态机
+// （序列可以跨块，状态留在 t.u8）。返回下一个需要外层处理的 ASCII 字节位置（引号 / 反斜杠 / 控制字符）或 len(p)；
+// 序列非法时 Bail。
+func (t *Transformer) scanStrUTF8(p []byte, i int) int {
+	for i < len(p) {
+		c := p[i]
+		if c >= 0x80 {
+			if t.u8.need == 0 {
+				// 序列开头且整个序列都在本块：查表一次验完，不进逐字节状态机
+				f := utf8First[c]
+				sz := int(f & 7)
+				if sz == 0 {
+					t.Bail("非法的 UTF-8 序列")
+					return i
+				}
+				if i+sz <= len(p) {
+					r := utf8Accept[f>>3]
+					ok := p[i+1] >= r.lo && p[i+1] <= r.hi
+					if sz >= 3 {
+						ok = ok && p[i+2] >= 0x80 && p[i+2] <= 0xBF
+					}
+					if sz == 4 {
+						ok = ok && p[i+3] >= 0x80 && p[i+3] <= 0xBF
+					}
+					if !ok {
+						t.Bail("非法的 UTF-8 序列")
+						return i
+					}
+					i += sz
+					continue
+				}
+			}
+			if !t.u8.step(c) { // 跨块的序列：逐字节
+				t.Bail("非法的 UTF-8 序列")
+				return i
+			}
+			i++
+			continue
+		}
+		if t.u8.need > 0 {
+			t.Bail("非法的 UTF-8 序列")
+			return i
+		}
+		i = scanStringBodyUTF8(p, i)
+		if i == len(p) || p[i] < 0x80 {
+			return i
+		}
+	}
+	return i
 }
 
 // decodeKey 解码带转义的 key。独立成函数是为了不让 onKeyDone 里的 key 变量因取地址而逃逸到堆上。

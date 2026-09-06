@@ -179,6 +179,19 @@ func (t *Transformer) SetTrace(fn func(Event))
   再往上要改短字符串的处理方式，收益递减，且引擎已不是网关里的瓶颈（洞察 1），暂停。
 - 验证：所有改动都过了 7 套 7456 条黄金差分、场景差分与模糊。
 
+第二批（正确性优先，按"正确性 > 流式性能 > 内存"重排后的第一步）：
+
+- **区域文法**：新模糊目标发现 Pass / Skip / Capture 区域里只数括号深度、不校验文法——`{"a":{]}`、`{"a":{"x" 1}}`
+  之类会被原样放行。现在区域内部与派发帧一样按文法走（阶段编码容器种类，查表转移，括号处动位栈），
+  `FuzzPassthrough` 双向断言拒绝面与 `encoding/json` 一致（含 `1000e1000` 这种 Valid 接受、Unmarshal 溢出的边角）。
+  代价：透传密集体 469 → 416 MB/s，贴近真实的 1MB 聊天体 1.71 → 1.65 GB/s，长字符串不变。
+- **2.1 根形状**：`SetRoot(RootObject | RootArray | RootAny)`，数组根按下标经 `OnElem` 派发；多文档流（`Stream`）未做。
+- **2.3 重复 key 策略**：`SetDupKeys(DupKeysPass | DupKeysBail | DupKeysFirst)`，`DupKeyBail` 字段保留；Defer 回放不会把自己算作重复。
+- **2.4 UTF-8 校验**：`SetValidateUTF8(true)`，RFC 3629 全覆盖（过长、代理对、> U+10FFFF、孤立 / 缺失续字节、跨块序列），
+  随机字节流与 `utf8.Valid` 逐一对照。整序列查表快路径：中文占一半的 1MB 体从 480 提到 955 MB/s。
+- 测试：`strict_test.go`（UTF-8 / 重复 key / 根形状 / 区域文法差分，2 万条随机结构垃圾对照 `json.Valid`）、
+  `FuzzStrictModes`；黄金差分、场景差分零变化。
+
 ## M2 · v0.3 —— 边界能力
 
 ### 2.1 根形状与多文档流
@@ -300,8 +313,8 @@ func WriteGolden(path string, s Suite, inputs []Case)  // 用参照生成黄金
 | 里程碑 | 内容 | 估算 |
 |---|---|---|
 | M1 v0.2 | 结构化错误 + 英文文案 → Router（chatconv 重写）→ Trace → 英文文档 | 3 天 |
-| M2 v0.3 | 根形状 / 多文档流 → 窗口与预算 → 重复 key 策略 → UTF-8 选项 | 2 天 |
+| M2 v0.3 | ~~根形状~~ / 多文档流 → ~~窗口与预算~~ → ~~重复 key 策略~~ → ~~UTF-8 选项~~ | 剩 0.5 天 |
 | M3 v0.4 | 零拷贝 key → sink → wasm 基准 → （视 profile）区域 SWAR | 2 天 |
 | M4 v0.5 | difftest → gen → sse → 教程 | 3 天 |
 
-先做 M1 的结构化错误：它改公开 API，越早定型越好，后面的 Router / Trace 都建立在它之上。
+M2 只剩多文档流。下一步是 M1 的结构化错误：它改公开 API，越早定型越好，后面的 Router / Trace 都建立在它之上。

@@ -440,6 +440,93 @@ func scanStringBody(p []byte, i int) int {
 	return i
 }
 
+// scanStringBodyUTF8 与 scanStringBody 相同，但也在第一个 ≥ 0x80 的字节处停下（开启 UTF-8 校验时使用）。
+func scanStringBodyUTF8(p []byte, i int) int {
+	const lo = 0x0101010101010101
+	const hi = 0x8080808080808080
+	const qq = lo * '"'
+	const bb = lo * '\\'
+	const sp = lo * 0x20
+	for i+8 <= len(p) {
+		x := binary.LittleEndian.Uint64(p[i:])
+		xq := x ^ qq
+		xb := x ^ bb
+		m := ((xq - lo) & ^xq & hi) | ((xb - lo) & ^xb & hi) | ((x - sp) & ^x & hi) | (x & hi)
+		if m != 0 {
+			return i + bits.TrailingZeros64(m)>>3
+		}
+		i += 8
+	}
+	for i < len(p) {
+		c := p[i]
+		if c == '"' || c == '\\' || c < 0x20 || c >= 0x80 {
+			return i
+		}
+		i++
+	}
+	return i
+}
+
+// utf8First 按首字节给出序列长度（低 3 位，0 = 非法首字节）与第二个字节的允许范围编号（高位，见 utf8Accept）。
+var utf8First = func() (t [256]uint8) {
+	for c := 0xC2; c <= 0xDF; c++ {
+		t[c] = 2
+	}
+	t[0xE0] = 3 | 1<<3
+	for c := 0xE1; c <= 0xEF; c++ {
+		t[c] = 3
+	}
+	t[0xED] = 3 | 2<<3
+	t[0xF0] = 4 | 3<<3
+	for c := 0xF1; c <= 0xF3; c++ {
+		t[c] = 4
+	}
+	t[0xF4] = 4 | 4<<3
+	return
+}()
+
+// utf8Accept 第二个字节的允许范围：0 = 一般，1 = E0 之后（排除过长），2 = ED 之后（排除代理对），
+// 3 = F0 之后（排除过长），4 = F4 之后（≤ U+10FFFF）。
+var utf8Accept = [5]struct{ lo, hi byte }{{0x80, 0xBF}, {0xA0, 0xBF}, {0x80, 0x9F}, {0x90, 0xBF}, {0x80, 0x8F}}
+
+// utf8State 是 RFC 3629 的 UTF-8 序列校验状态：need 是还差几个续字节，lo/hi 是下一个字节允许的范围。
+type utf8State struct {
+	need   uint8
+	lo, hi byte
+}
+
+func (u *utf8State) step(c byte) bool {
+	if u.need == 0 {
+		switch {
+		case c < 0x80:
+			return true
+		case c >= 0xC2 && c <= 0xDF:
+			u.need, u.lo, u.hi = 1, 0x80, 0xBF
+		case c == 0xE0:
+			u.need, u.lo, u.hi = 2, 0xA0, 0xBF
+		case c >= 0xE1 && c <= 0xEC, c == 0xEE, c == 0xEF:
+			u.need, u.lo, u.hi = 2, 0x80, 0xBF
+		case c == 0xED:
+			u.need, u.lo, u.hi = 2, 0x80, 0x9F // 排除代理对
+		case c == 0xF0:
+			u.need, u.lo, u.hi = 3, 0x90, 0xBF
+		case c >= 0xF1 && c <= 0xF3:
+			u.need, u.lo, u.hi = 3, 0x80, 0xBF
+		case c == 0xF4:
+			u.need, u.lo, u.hi = 3, 0x80, 0x8F // ≤ U+10FFFF
+		default:
+			return false // C0 C1 F5..FF 与孤立的续字节
+		}
+		return true
+	}
+	if c < u.lo || c > u.hi {
+		return false
+	}
+	u.need--
+	u.lo, u.hi = 0x80, 0xBF
+	return true
+}
+
 // jsonSpace 标出 JSON 文法允许的 4 种空白。
 var jsonSpace = [256]bool{' ': true, '\t': true, '\n': true, '\r': true}
 

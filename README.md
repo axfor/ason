@@ -36,11 +36,18 @@ also push its own output levels (`PushObj` / `PushArr` / `Pop`) to move an input
 output shape. Output is released only after a **commit point** (`CommitBytes`, 64KB of input), so a caller
 that keeps the original bytes until then can fall back to another strategy when the protocol bails early.
 
-The scanner validates JSON with the same rejection surface as `encoding/json` (literals, number grammar,
-escapes, control characters, whitespace), byte by byte, with constant state. String bodies are scanned eight
-bytes at a time; long strings and base64 payloads stream at roughly 2.5 GB/s per core, dense structure at
-roughly 470 MB/s, with a few hundred allocations per megabyte regardless of how many keys the document has.
-`SetBudget` caps the total the engine may hold for one document; `Buffered()` reports it.
+The scanner validates JSON with the same rejection surface as `encoding/json` (structure, literals, number
+grammar, escapes, control characters, whitespace), byte by byte, with constant state — inside pass-through
+regions as well as in dispatched frames, which the fuzz targets assert in both directions. String bodies are
+scanned eight bytes at a time; long strings and base64 payloads stream at roughly 2.5 GB/s per core, a
+realistic 1MB chat body at roughly 1.6 GB/s, dense structure at roughly 420 MB/s, with a few hundred
+allocations per megabyte regardless of how many keys the document has.
+
+Per-transformer options: `SetCommitBytes` (commit window), `SetBudget` (cap on everything the engine may hold
+for one document; `Buffered()` reports it), `SetRoot` (`RootObject` by default, `RootArray`, or `RootAny` —
+array roots dispatch by index), `SetDupKeys` (`DupKeysPass`, `DupKeysBail`, or `DupKeysFirst` for gjson-style
+first-wins), and `SetValidateUTF8` (RFC 3629 validation of strings and keys, off by default like `encoding/json`;
+whole sequences are checked with one table lookup, sequences split across chunks fall back to a byte DFA).
 
 ## Examples
 
