@@ -159,7 +159,7 @@ func TestDupKeysPolicy(t *testing.T) {
 				if ok {
 					t.Fatalf("%s chunk=%d: 应判定不支持，却输出 %q", c.name, cs, got)
 				}
-				if !strings.Contains(why, "重复的 key") {
+				if tr.Err().Code != ErrDuplicateKey {
 					t.Fatalf("%s: 原因不对: %s", c.name, why)
 				}
 				continue

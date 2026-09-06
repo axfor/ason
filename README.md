@@ -29,7 +29,7 @@ of a container the protocol has *entered*, asks the protocol for an **action**:
 | `Capture(cap)` | value collected and handed to `OnValue`; the protocol writes the replacement | bounded |
 | `Defer(cap)` | key + value held and re-dispatched when the protocol calls `Release` (a field that arrives before the field that decides its shape) | bounded |
 | `Prefix(cap)` | string: the first `cap` bytes go to `OnPrefix`, which decides how the rest streams (split a `data:` URL, redact, detect a scheme) | window only |
-| `Bail(reason)` | unsupported: the transformer stops and reports the reason | — |
+| `Bail(reason)` / `BailCode(code, reason)` | unsupported: the transformer stops and reports the reason (and a `Code`) | — |
 
 The writer builds output **lazily**: a container that never receives a write leaves no trace; a protocol can
 also push its own output levels (`PushObj` / `PushArr` / `Pop`) to move an input container into a nested
@@ -48,6 +48,14 @@ for one document; `Buffered()` reports it), `SetRoot` (`RootObject` by default, 
 array roots dispatch by index), `SetDupKeys` (`DupKeysPass`, `DupKeysBail`, or `DupKeysFirst` for gjson-style
 first-wins), and `SetValidateUTF8` (RFC 3629 validation of strings and keys, off by default like `encoding/json`;
 whole sequences are checked with one table lookup, sequences split across chunks fall back to a byte DFA).
+
+When the transformer stops, `Err()` returns an `*Error` with a `Code` (`ErrSyntax`, `ErrIncomplete`, `ErrRoot`,
+`ErrTrailing`, `ErrDuplicateKey`, `ErrLimit`, `ErrLeftoverDefer`, `ErrUnsupported` for a protocol's own `Bail`,
+`ErrMisuse` for an action used where it cannot apply), an English message, the input offset at which it was
+detected, and the path at that point. `Unsupported()` still returns the boolean and a one-line text
+(`unexpected comma at byte 512 in messages[2].content`); callers that need to classify use the code rather
+than the text. Offsets and paths do not depend on how the input was chunked (the one exception is the budget
+check on pre-commit output, which runs at the end of each `Write`).
 
 ## Examples
 

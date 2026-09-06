@@ -33,6 +33,7 @@ type Action struct {
 	suffix  []byte   // Pass：写在值后
 	cap     int      // Capture/Observe/Defer/Prefix：字节上限，0 = 不限
 	reason  string   // Bail
+	code    Code     // Bail：分类，Bail() 为 ErrUnsupported
 	via     Protocol // Enter：这棵子树里的回调交给它（子 hook），容器闭合的 OnLeave 仍回到发起 Enter 的一方
 }
 
@@ -44,7 +45,7 @@ func Defer(cap int) Action      { return Action{kind: akDefer, level: -1, cap: c
 func Enter() Action             { return Action{kind: akEnter, level: -1} }
 func Probe() Action             { return Action{kind: akProbe, level: -1} }
 func Prefix(cap int) Action     { return Action{kind: akPrefix, level: -1, cap: cap} }
-func Bail(reason string) Action { return Action{kind: akBail, level: -1, reason: reason} }
+func Bail(reason string) Action { return BailCode(ErrUnsupported, reason) }
 
 // As 改名（Pass / Enter）。
 func (a Action) As(key string) Action { a.key = key; return a }

@@ -21,7 +21,7 @@ func TestBudgetCapsCapture(t *testing.T) {
 	tr := NewTransformer(captureProto{})
 	tr.SetBudget(64 << 10)
 	_, ok, why := feedAll(tr, in, 4096)
-	if ok || !strings.Contains(why, "预算") {
+	if ok || tr.Err().Code != ErrLimit {
 		t.Fatalf("应因预算超限判定不支持: ok=%v why=%s", ok, why)
 	}
 	// 预算够时正常
@@ -38,13 +38,13 @@ func TestBudgetCoversDeferAndPreCommit(t *testing.T) {
 	in := `{"content":"` + strings.Repeat("y", 100<<10) + `","role":"user"}`
 	tr := NewTransformer(&roleProtoForBudget{})
 	tr.SetBudget(32 << 10)
-	if _, ok, why := feedAll(tr, in, 4096); ok || !strings.Contains(why, "预算") {
+	if _, ok, why := feedAll(tr, in, 4096); ok || tr.Err().Code != ErrLimit {
 		t.Fatalf("Defer 暂存超预算应判定不支持: ok=%v why=%s", ok, why)
 	}
 	// 透传但提交前的输出也计入预算：窗口 64KB、预算 16KB → 越过窗口前攒的输出超限
 	tr = NewTransformer(BaseProtocol{})
 	tr.SetBudget(16 << 10)
-	if _, ok, why := feedAll(tr, in, 4096); ok || !strings.Contains(why, "预算") {
+	if _, ok, why := feedAll(tr, in, 4096); ok || tr.Err().Code != ErrLimit {
 		t.Fatalf("提交前输出超预算应判定不支持: ok=%v why=%s", ok, why)
 	}
 }

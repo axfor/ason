@@ -252,7 +252,7 @@ func check(t *testing.T, name string, in []byte) {
 			continue
 		}
 		if !ok {
-			if strings.Contains(why, "缓冲超过上限") {
+			if strings.Contains(why, "capture limit exceeded") {
 				continue // 有界前瞻：值先于决定其形状的字段到达且超过暂存上限，只能回落——设计上的已知回落
 			}
 			t.Fatalf("%s chunk=%d: 参照成功但流式判定不支持: %s\n输入 %s", name, cs, why, in)

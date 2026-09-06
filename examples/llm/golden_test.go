@@ -215,13 +215,13 @@ func allowedFallback(rec goldenRec, why string) bool {
 	}
 	switch rec.Suite {
 	case "claude":
-		return has("重复的 key", "官方会跳过", "panic")
+		return has("duplicate key", "官方会跳过", "panic")
 	case "gemini", "qwen_native":
-		return has("重复的 key", "panic")
+		return has("duplicate key", "panic")
 	case "openai":
 		return chat && hasDeveloper(rec.In)
 	default: // 变体
-		return chat && hasDeveloper(rec.In) || has("不是对象", "messages 不是数组", "重复 key", "重复的 key")
+		return chat && hasDeveloper(rec.In) || has("不是对象", "messages 不是数组", "重复 key", "duplicate key")
 	}
 }
 

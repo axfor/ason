@@ -166,7 +166,7 @@ func TestDeferOverflowBails(t *testing.T) {
 	tr := NewTransformer(&probeProto{})
 	tr.Write([]byte(in))
 	tr.Finish()
-	if bad, why := tr.Unsupported(); !bad || !strings.Contains(why, "上限") {
+	if bad, why := tr.Unsupported(); !bad || tr.Err().Code != ErrLimit {
 		t.Errorf("Defer 超上限应 Bail: %v %s", bad, why)
 	}
 }
@@ -208,7 +208,7 @@ func TestLeftoverDeferredBails(t *testing.T) {
 	tr := NewTransformer(&forgetfulProto{})
 	tr.Write([]byte(`{"late":{"important":true},"sig":1,"keep":2}`))
 	tr.Finish()
-	if bad, why := tr.Unsupported(); !bad || !strings.Contains(why, "Defer") {
+	if bad, why := tr.Unsupported(); !bad || tr.Err().Code != ErrLeftoverDefer {
 		t.Errorf("残留 Defer 项应 Bail: %v %s", bad, why)
 	}
 }

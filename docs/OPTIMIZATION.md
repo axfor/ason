@@ -191,6 +191,10 @@ func (t *Transformer) SetTrace(fn func(Event))
   随机字节流与 `utf8.Valid` 逐一对照。整序列查表快路径：中文占一半的 1MB 体从 480 提到 955 MB/s。
 - 测试：`strict_test.go`（UTF-8 / 重复 key / 根形状 / 区域文法差分，2 万条随机结构垃圾对照 `json.Valid`）、
   `FuzzStrictModes`；黄金差分、场景差分零变化。
+- **1.1 结构化错误**：`Err() *Error{Code, Msg, Offset, Path}`，引擎内部全部改为带分类的英文文案；`Unsupported()` 文案变为
+  `Err().Error()`（原因 + 偏移 + 路径），`Bail(string)` 保留为 `ErrUnsupported`，新增 `BailCode`。偏移在 scan 出口一次定位
+  （`defer`，热路径零开销；Defer 回放里的错误取外层位置），与分块方式无关。引擎与示例的断言全部改为按 `Code`。
+  比方案多了 `ErrIncomplete`（截断）与 `ErrMisuse`（用错动作），网关据此把"客户端断了"与"协议写错了"分开。
 
 ## M2 · v0.3 —— 边界能力
 
@@ -312,9 +316,9 @@ func WriteGolden(path string, s Suite, inputs []Case)  // 用参照生成黄金
 
 | 里程碑 | 内容 | 估算 |
 |---|---|---|
-| M1 v0.2 | 结构化错误 + 英文文案 → Router（chatconv 重写）→ Trace → 英文文档 | 3 天 |
+| M1 v0.2 | ~~结构化错误 + 英文文案~~ → Router（chatconv 重写）→ Trace → 英文文档 | 剩 2 天 |
 | M2 v0.3 | ~~根形状~~ / 多文档流 → ~~窗口与预算~~ → ~~重复 key 策略~~ → ~~UTF-8 选项~~ | 剩 0.5 天 |
 | M3 v0.4 | 零拷贝 key → sink → wasm 基准 → （视 profile）区域 SWAR | 2 天 |
 | M4 v0.5 | difftest → gen → sse → 教程 | 3 天 |
 
-M2 只剩多文档流。下一步是 M1 的结构化错误：它改公开 API，越早定型越好，后面的 Router / Trace 都建立在它之上。
+M2 只剩多文档流，M1 的结构化错误已定型。Higress 侧待办：升级 ason 伪版本后，guard 与差分 harness 的回落判定改为按 `Code`。

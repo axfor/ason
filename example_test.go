@@ -227,5 +227,5 @@ func Example_dataURL() {
 func Example_strict() {
 	_, why := feed(ason.NewTransformer(ason.BaseProtocol{}), `{"a":1,"b":tru}`, 1)
 	fmt.Println(why)
-	// Output: 不完整的标量字面量
+	// Output: incomplete literal at byte 14 in b
 }
