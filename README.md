@@ -55,9 +55,20 @@ echo '{"items":[{"k":"v"}],"owner":"team/42"}' | go run ./examples/rewrite -chun
 
 ## Tests
 
-`go test ./...` — engine actions and replay rules, format fidelity (no byte changes on untouched input,
-`sjson`-identical rewrites), strict literal / escape / whitespace rejection at every chunk size, chunk-size
-invariance on random documents, garbage input never panics, deep nesting and multi-megabyte strings.
+`go test ./...` runs four layers, all on every push (see `.github/workflows/test.yml`, with `-race`,
+Go 1.24 and stable, plus a short native fuzz job and a `wasip1` build):
+
+- **engine**: actions and replay rules, format fidelity (no byte changes on untouched input,
+  `sjson`-identical rewrites), strict literal / escape / whitespace rejection at every chunk size, chunk-size
+  invariance on random documents, garbage input never panics, deep nesting and multi-megabyte strings;
+- **examples**: every program under `examples/` is built and run with fixed input at three chunk sizes and
+  compared with `examples/testdata/*.golden`; the `Example` functions in `example_test.go` are verified too;
+- **scenarios**: `examples/chatconv/conv` is a complete request-conversion protocol that uses every engine
+  path (Capture, Defer / Release, Prefix, Via, Lazy levels, protocol-built levels, Tail). It is checked
+  against a buffered reference implementation on 40 hand-written shapes and 3000 random documents
+  (shuffled field order, escapes, multi-modal parts, tool shapes, malformed input) at chunk sizes 1 / 3 / 7 / 64 / 4096;
+- **fuzz**: `FuzzPassthrough` and `FuzzKeyProbe` (`go test -fuzz=FuzzPassthrough .`).
+
 Design notes: [docs/DESIGN.md](docs/DESIGN.md).
 
 ## 中文说明

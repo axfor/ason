@@ -4,13 +4,43 @@ on:
   pull_request:
 jobs:
   test:
+    name: go ${{ matrix.go }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        go: ["1.24", "stable"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go }}
+      - name: gofmt
+        run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+      - name: vet
+        run: go vet ./...
+      - name: unit, scenario and example tests (race)
+        run: go test -race -count=1 -coverprofile=cover.out ./...
+      - name: coverage
+        run: go tool cover -func=cover.out | tail -1
+      - name: build every example
+        run: go build ./...
+      - name: run every example with its sample input
+        run: |
+          for d in examples/*/; do
+            [ -f "$d/main.go" ] || continue
+            echo "== $d"
+            go run "./$d" < /dev/null || [ "$(basename "$d")" = fallback ]
+          done
+      - name: wasip1 build
+        run: GOOS=wasip1 GOARCH=wasm go build ./...
+  fuzz:
+    name: native fuzz (short)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.24"
-      - run: test -z "$(gofmt -l .)"
-      - run: go vet ./...
-      - run: go test -race -count=1 ./...
-      - run: GOOS=wasip1 GOARCH=wasm go build ./...
+          go-version: "stable"
+      - run: go test -run='^$' -fuzz=FuzzPassthrough -fuzztime=30s .
+      - run: go test -run='^$' -fuzz=FuzzKeyProbe -fuzztime=20s .

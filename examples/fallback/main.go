@@ -5,6 +5,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -13,13 +14,15 @@ import (
 )
 
 func main() {
+	chunk := flag.Int("chunk", 5, "每次喂给转换器的字节数")
+	flag.Parse()
 	tr := ason.NewTransformer(ason.BaseProtocol{})
 	var held []byte // 提交点之前，调用方自己留着原始字节
 	in := io.Reader(os.Stdin)
 	if fi, err := os.Stdin.Stat(); err == nil && fi.Mode()&os.ModeCharDevice != 0 {
 		in = readerOf(`{"a":1,"b":tru}`)
 	}
-	buf := make([]byte, 4096)
+	buf := make([]byte, *chunk)
 	for {
 		n, err := in.Read(buf)
 		if n > 0 {

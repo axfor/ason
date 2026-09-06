@@ -41,3 +41,13 @@ func TestTrailingWhitespaceBeforeComma(t *testing.T) {
 		}
 	}
 }
+
+// 根对象之前的空白也要保留。
+func TestLeadingWhitespace(t *testing.T) {
+	for _, in := range []string{" {}", "\n\t{\"a\":1}\n", "  \r\n{ }  "} {
+		out, ok, why := feedAll(NewTransformer(BaseProtocol{}), in, 1)
+		if !ok || out != in {
+			t.Fatalf("%q: ok=%v why=%s out=%q", in, ok, why, out)
+		}
+	}
+}

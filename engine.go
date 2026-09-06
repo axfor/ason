@@ -106,6 +106,7 @@ type Transformer struct {
 	elemWs      []byte
 	rootCloseWs []byte
 	tailWs      []byte // 根对象之后的空白（如尾部换行）：Finish 时原样吐出
+	leadWs      []byte // 根对象之前的空白：根打开时原样吐出
 
 	regOpen  bool
 	regT     regionTarget
@@ -442,6 +443,8 @@ func (t *Transformer) scan(p []byte) {
 					t.wsRaw = append(t.wsRaw, c)
 				} else if t.rootDone {
 					t.tailWs = append(t.tailWs, c)
+				} else if !t.rootSeen {
+					t.leadWs = append(t.leadWs, c)
 				}
 				i++
 				continue
@@ -488,6 +491,7 @@ func (t *Transformer) scan(p []byte) {
 				t.rootSeen = true
 				t.depth = 1
 				t.frames = append(t.frames, frame{kind: fkObj, ph: phKey, idx: -1})
+				t.w.buf = append(t.w.buf, t.leadWs...) // 根之前的空白保真
 				t.w.push("", nil, false)
 				t.wsRaw = t.wsRaw[:0]
 				i++

@@ -93,7 +93,9 @@ func (w *Writer) CanWriteAt(level int) bool {
 }
 
 // Opened 报告第 level 层是否已打开。
-func (w *Writer) Opened(level int) bool { return w.frames[level].opened }
+func (w *Writer) Opened(level int) bool {
+	return level >= 0 && level < len(w.frames) && w.frames[level].opened
+}
 
 // KeyAt 在第 level 层写 "name":，自动处理逗号与祖先层的打开。
 // 其上有已打开的层时返回 false 且不写。

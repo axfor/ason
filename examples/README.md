@@ -15,6 +15,7 @@ stdin 是终端时用程序自带的样例输入。
 | `attachment` | `Prefix + Pass().Wrap`：data URL 拆前缀，主体直通到另一个形状 |
 | `observe` | 只看不改：Skip 一切、数元素，输出扔掉 |
 | `fallback` | 提交点：不支持发生在 64KB 之前时调用方换路 |
+| `chatconv` | 完整的"聊天请求转换"协议（`conv` 包）：system 上提、role 决定 content 形状、图片 data URL 拆分、tools 子 hook、stop 改名、Tail 补缺省；附整体缓冲的参照实现、40 个手写场景与 3000 例随机差分 |
 
 ```
 go run ./examples/rename

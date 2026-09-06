@@ -5,6 +5,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -40,13 +41,15 @@ func (o *observer) OnElem(t *ason.Transformer) ason.Action {
 func (o *observer) OnValue(t *ason.Transformer, raw []byte) { o.owner, _ = ason.JSONUnquote(raw) }
 
 func main() {
+	chunk := flag.Int("chunk", 5, "每次喂给转换器的字节数")
+	flag.Parse()
 	o := &observer{}
 	tr := ason.NewTransformer(o)
 	in := io.Reader(os.Stdin)
 	if fi, err := os.Stdin.Stat(); err == nil && fi.Mode()&os.ModeCharDevice != 0 {
 		in = readerOf(`{"owner":"team/42","items":[{"a":1},{"b":2},3]}`)
 	}
-	buf := make([]byte, 5)
+	buf := make([]byte, *chunk)
 	for {
 		n, err := in.Read(buf)
 		if n > 0 {
