@@ -173,6 +173,7 @@ type Transformer struct {
 	committed   bool
 	unsupported bool
 	err         *Error
+	sink        func([]byte)
 	limitAt     int   // 上限 / 预算超限时：本次追加里装得下的字节数（定位第一个装不下的字节）
 	scanBase    int64 // 当前 Write 的块在整个输入里的起始偏移
 	replaying   int   // > 0：正在回放 Defer 项（嵌套 scan），错误偏移取外层位置
@@ -263,9 +264,29 @@ func (t *Transformer) Unsupported() (bool, string) {
 	return true, t.err.Error()
 }
 
-// Out 取走可下发的字节。未越过提交点、或已判定不支持时返回空。
-func (t *Transformer) Out() []byte {
+// SetSink 设置输出接收方。设了之后，每次 Write / Finish 里越过提交点后产生的输出直接交给 sink，
+// 输出缓冲随后复用而不是交出所有权——每块不再分配一次、整条流不再制造与输入等量的垃圾，
+// 适合能立即消费的调用方（写宿主、写连接）。sink 返回前必须消费完 b（拷贝或写出），返回后 b 失效。
+// 设了 sink 之后 Out() 总是返回空。必须在第一次 Write 之前调用。
+func (t *Transformer) SetSink(sink func(b []byte)) { t.sink = sink }
+
+// drain 把可下发的输出交给 sink（提交点之后、未判定不支持时）。
+func (t *Transformer) drain(chunk int) {
 	if t.unsupported || !t.committed || len(t.w.buf) == 0 {
+		return
+	}
+	t.sink(t.w.buf)
+	if cap(t.w.buf) > 2*chunk+4096 {
+		t.w.buf = nil // 提交前攒下的大缓冲不留着；下一块按块大小重新分配后一直复用
+		t.w.hint = chunk
+	} else {
+		t.w.buf = t.w.buf[:0]
+	}
+}
+
+// Out 取走可下发的字节。未越过提交点、或已判定不支持、或设了 sink 时返回空。
+func (t *Transformer) Out() []byte {
+	if t.unsupported || !t.committed || len(t.w.buf) == 0 || t.sink != nil {
 		return nil
 	}
 	// 交出所有权，不拷贝也不保留容量：提交点前攒下的大缓冲（可达 128KB）随之变成垃圾，
@@ -295,6 +316,9 @@ func (t *Transformer) Write(p []byte) {
 			t.committed = true
 		}
 	}
+	if t.sink != nil {
+		t.drain(len(p))
+	}
 }
 
 // Finish 收尾：调用协议 Tail，闭合根对象。
@@ -322,6 +346,10 @@ func (t *Transformer) Finish() []byte {
 	t.w.pop(t.rootCloseWs)
 	t.w.buf = append(t.w.buf, t.tailWs...) // 根之后的空白（尾部换行）保真
 	t.committed = true
+	if t.sink != nil {
+		t.drain(0)
+		return nil
+	}
 	return t.Out()
 }
 

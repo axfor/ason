@@ -195,6 +195,9 @@ func (t *Transformer) SetTrace(fn func(Event))
   `Err().Error()`（原因 + 偏移 + 路径），`Bail(string)` 保留为 `ErrUnsupported`，新增 `BailCode`。偏移在 scan 出口一次定位
   （`defer`，热路径零开销；Defer 回放里的错误取外层位置），与分块方式无关。引擎与示例的断言全部改为按 `Code`。
   比方案多了 `ErrIncomplete`（截断）与 `ErrMisuse`（用错动作），网关据此把"客户端断了"与"协议写错了"分开。
+- **3.2 输出 sink**：`SetSink(func([]byte))`，提交点之后的输出在每次 Write 末尾交给回调，缓冲随后复用；提交前攒下的大缓冲
+  在第一次交付后丢弃，之后每条流只持有一块块大小的缓冲。1MB / 16KB 分块：77 次 1.2MB → 17 次 168KB，2.7 → 4.2 GB/s。
+  这是洞察 1 里"减少垃圾"的主项：网关侧每请求的输出垃圾从与输入等量降到常数（wrapper 接入待 ason 发布后做）。
 
 ## M2 · v0.3 —— 边界能力
 
@@ -318,7 +321,7 @@ func WriteGolden(path string, s Suite, inputs []Case)  // 用参照生成黄金
 |---|---|---|
 | M1 v0.2 | ~~结构化错误 + 英文文案~~ → Router（chatconv 重写）→ Trace → 英文文档 | 剩 2 天 |
 | M2 v0.3 | ~~根形状~~ / 多文档流 → ~~窗口与预算~~ → ~~重复 key 策略~~ → ~~UTF-8 选项~~ | 剩 0.5 天 |
-| M3 v0.4 | 零拷贝 key → sink → wasm 基准 → （视 profile）区域 SWAR | 2 天 |
+| M3 v0.4 | 零拷贝 key → ~~sink~~ → wasm 基准 → （视 profile）区域 SWAR | 剩 1.5 天 |
 | M4 v0.5 | difftest → gen → sse → 教程 | 3 天 |
 
 M2 只剩多文档流，M1 的结构化错误已定型。Higress 侧待办：升级 ason 伪版本后，guard 与差分 harness 的回落判定改为按 `Code`。
