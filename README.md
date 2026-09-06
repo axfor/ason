@@ -67,6 +67,9 @@ Go 1.24 and stable, plus a short native fuzz job and a `wasip1` build):
   path (Capture, Defer / Release, Prefix, Via, Lazy levels, protocol-built levels, Tail). It is checked
   against a buffered reference implementation on 40 hand-written shapes and 3000 random documents
   (shuffled field order, escapes, multi-modal parts, tool shapes, malformed input) at chunk sizes 1 / 3 / 7 / 64 / 4096;
+- **protocol suite** (`examples/llm`): the protocols Higress ai-proxy runs on this engine, with their
+  behavioural tests and a golden differential — 7 suites, every hand-written case plus 1000 random requests
+  each, compared field by field with the output of the reference (buffered) implementations at four chunk sizes;
 - **fuzz**: `FuzzPassthrough` and `FuzzKeyProbe` (`go test -fuzz=FuzzPassthrough .`).
 
 Design notes: [docs/DESIGN.md](docs/DESIGN.md).
