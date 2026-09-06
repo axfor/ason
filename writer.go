@@ -8,6 +8,7 @@ package ason
 type Writer struct {
 	buf    []byte
 	frames []wframe
+	hint   int // 上次交出的输出大小：下一次分配缓冲时按它预留，一块只分配一次
 }
 
 type wframe struct {
@@ -23,7 +24,26 @@ type wframe struct {
 func (w *Writer) Level() int { return len(w.frames) - 1 }
 
 func (w *Writer) push(key string, raw []byte, isArr bool) {
-	w.frames = append(w.frames, wframe{key: key, raw: raw, isArr: isArr})
+	nf := wframe{key: key, isArr: isArr}
+	if n := len(w.frames); n < cap(w.frames) { // 复用槽位里的 raw 存储
+		nf.raw = append(w.frames[:n+1][n].raw[:0], raw...)
+	} else {
+		nf.raw = append([]byte(nil), raw...)
+	}
+	w.frames = append(w.frames, nf)
+}
+
+// reserve 在缓冲为空时按上次交出的大小预留，避免一块输出里反复扩容。
+func (w *Writer) reserve(n int) {
+	if cap(w.buf) == 0 {
+		if n < w.hint {
+			n = w.hint
+		}
+		if n < 64 {
+			n = 64
+		}
+		w.buf = make([]byte, 0, n)
+	}
 }
 
 // pop 闭合当前层；从未打开则不写任何东西。closeWs 是原文里闭合括号前的空白。
@@ -161,7 +181,7 @@ func (w *Writer) Pop()               { w.pop(nil) }
 func (w *Writer) Open() { w.ensureOpen(w.Level()) }
 
 // Raw 原样追加字节。调用方负责它出现在语法上合法的位置。
-func (w *Writer) Raw(b []byte)       { w.buf = append(w.buf, b...) }
+func (w *Writer) Raw(b []byte)       { w.reserve(len(b)); w.buf = append(w.buf, b...) }
 func (w *Writer) RawString(s string) { w.buf = append(w.buf, s...) }
 func (w *Writer) Byte(c byte)        { w.buf = append(w.buf, c) }
 

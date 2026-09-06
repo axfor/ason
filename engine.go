@@ -73,6 +73,9 @@ const (
 	rtPrefix
 )
 
+// internKeysMax 是 key 驻留表的上限：正常文档的不同 key 远少于此，对抗性输入（海量不同 key）不会让表无限增长。
+const internKeysMax = 4096
+
 // CommitBytes 是提交点窗口：扫描这么多输入字节之前不下发任何输出。
 // 越过之前判定不支持，调用方仍持有全部原始字节，可以干净回落。
 const CommitBytes = 64 << 10
@@ -105,8 +108,9 @@ type Transformer struct {
 	wsRaw       []byte
 	elemWs      []byte
 	rootCloseWs []byte
-	tailWs      []byte // 根对象之后的空白（如尾部换行）：Finish 时原样吐出
-	leadWs      []byte // 根对象之前的空白：根打开时原样吐出
+	tailWs      []byte            // 根对象之后的空白（如尾部换行）：Finish 时原样吐出
+	keys        map[string]string // key 驻留表：重复出现的 key 不再分配（上限 internKeysMax 个）
+	leadWs      []byte            // 根对象之前的空白：根打开时原样吐出
 
 	regOpen  bool
 	regT     regionTarget
@@ -163,6 +167,7 @@ func (t *Transformer) Out() []byte {
 	// 而不是被这条流持有到结束——高并发下每条在途流的存活内存由此从 ~250KB 降到几十 KB。
 	// 调用方拿到的切片归它所有；下一次写入会重新分配。
 	b := t.w.buf
+	t.w.hint = len(b)
 	t.w.buf = nil
 	return b
 }
@@ -173,6 +178,7 @@ func (t *Transformer) Write(p []byte) {
 		return
 	}
 	t.scanned += len(p)
+	t.w.reserve(len(p)) // 一块输出只分配一次缓冲（按上次交出的大小预留）
 	t.scan(p)
 	if !t.committed && !t.unsupported && t.scanned >= CommitBytes {
 		t.committed = true
@@ -297,6 +303,16 @@ func (t *Transformer) DropDeferred() {
 }
 
 // ---- 扫描器 ----
+
+// pushFrame 压入派发帧，复用槽位里上一次留下的 seen / deferred 存储，不再按帧分配。
+func (t *Transformer) pushFrame(nf frame) {
+	if n := len(t.frames); n < cap(t.frames) {
+		old := &t.frames[:n+1][n]
+		nf.seen = old.seen[:0]
+		nf.deferred = old.deferred[:0]
+	}
+	t.frames = append(t.frames, nf)
+}
 
 func (t *Transformer) top() *frame {
 	if len(t.frames) == 0 {
@@ -490,7 +506,7 @@ func (t *Transformer) scan(p []byte) {
 				}
 				t.rootSeen = true
 				t.depth = 1
-				t.frames = append(t.frames, frame{kind: fkObj, ph: phKey, idx: -1})
+				t.pushFrame(frame{kind: fkObj, ph: phKey, idx: -1})
 				t.w.buf = append(t.w.buf, t.leadWs...) // 根之前的空白保真
 				t.w.push("", nil, false)
 				t.wsRaw = t.wsRaw[:0]
@@ -672,7 +688,7 @@ func (t *Transformer) apply(f *frame, act Action, kind ValueKind) bool {
 		if nf.hook == nil {
 			nf.hook = f.hook // 子 hook 自己 Enter 的层仍归它
 		}
-		t.frames = append(t.frames, nf)
+		t.pushFrame(nf)
 		if !act.flat {
 			name := ""
 			var raw []byte
@@ -680,10 +696,10 @@ func (t *Transformer) apply(f *frame, act Action, kind ValueKind) bool {
 				name = act.key
 				if name == "" {
 					name = t.Last()
-					raw = append([]byte(nil), t.kvRaw...)
+					raw = t.kvRaw // push 会拷贝进槽位
 				}
 			} else {
-				raw = append([]byte(nil), t.elemWs...)
+				raw = t.elemWs
 			}
 			t.w.push(name, raw, kind == KindArray)
 		}
@@ -865,16 +881,22 @@ func (t *Transformer) endRegion() {
 func (t *Transformer) onKeyDone() {
 	var key string
 	if t.keyEsc { // 带转义的 key：按 JSON 解码后再派发（原文仍由 kvRaw 保留）
-		q := make([]byte, 0, len(t.keyBuf)+2)
-		q = append(q, '"')
-		q = append(q, t.keyBuf...)
-		q = append(q, '"')
-		if err := json.Unmarshal(q, &key); err != nil {
+		k, ok := decodeKey(t.keyBuf)
+		if !ok {
 			t.Bail("key 转义非法")
 			return
 		}
+		key = k
+	} else if k, ok := t.keys[string(t.keyBuf)]; ok { // map 以 []byte 查找不分配
+		key = k
 	} else {
 		key = string(t.keyBuf)
+		if t.keys == nil {
+			t.keys = make(map[string]string, 32)
+		}
+		if len(t.keys) < internKeysMax {
+			t.keys[key] = key
+		}
 	}
 	f := t.top()
 	if t.DupKeyBail {
@@ -982,4 +1004,17 @@ func (t *Transformer) replayKV(kv DeferredKV) {
 		t.scan([]byte{' '}) // 补一个分隔符收尾标量
 	}
 	t.wsRaw = t.wsRaw[:0] // 上面的补位空格不属于原文
+}
+
+// decodeKey 解码带转义的 key。独立成函数是为了不让 onKeyDone 里的 key 变量因取地址而逃逸到堆上。
+func decodeKey(raw []byte) (string, bool) {
+	q := make([]byte, 0, len(raw)+2)
+	q = append(q, '"')
+	q = append(q, raw...)
+	q = append(q, '"')
+	var s string
+	if err := json.Unmarshal(q, &s); err != nil {
+		return "", false
+	}
+	return s, true
 }
