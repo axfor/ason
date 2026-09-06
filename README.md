@@ -42,14 +42,16 @@ bytes at a time; long strings and base64 payloads stream at roughly 2.5 GB/s per
 
 ## Examples
 
-`example_test.go` is the tour: passthrough, rename, in-place rewrite (`KeyProbe`), redaction with `Prefix`,
-restructuring `items` into `data.items`, deferred replay when a value arrives before the field that decides
-its shape, sub-hooks with `Enter().Via`, streaming a `data:` URL payload into another shape, and strict
-validation. `cmd/ason-demo` runs a few of them on stdin:
+`examples/` holds one runnable program per technique — passthrough, rename, in-place rewrite (`KeyProbe`),
+redaction with `Prefix`, restructuring `items` into `data.items`, deferred replay when a value arrives before
+the field that decides its shape, sub-hooks with `Enter().Via`, streaming a `data:` URL payload into another
+shape, read-only observation, and the commit-point fallback. Each reads stdin in small chunks:
 
 ```
-echo '{"items":[{"k":"v"}],"owner":"team/42"}' | go run ./cmd/ason-demo -demo rewrite -chunk 7
+echo '{"items":[{"k":"v"}],"owner":"team/42"}' | go run ./examples/rewrite -chunk 3
 ```
+
+`example_test.go` covers the same techniques as verified `Example` functions.
 
 ## Tests
 
@@ -67,4 +69,4 @@ ason 是 Go 的通用流式 JSON 转换框架：文档边到达边改写，按�
 
 协议就是一组回调：扫描器对每个 key / 数组元素向协议要一个动作（Pass / Skip / Enter / Probe / Observe / Capture / Defer / Prefix / Bail），
 写出器惰性建层，输出在 64KB 提交点之后才下发——调用方在此之前保留原始字节，协议判定不支持时可以换一条路。
-扫描器按 `encoding/json` 的拒绝面逐字节校验，常数状态。示例见 `example_test.go`，设计见 `docs/DESIGN.md`。
+扫描器按 `encoding/json` 的拒绝面逐字节校验，常数状态。示例见 `examples/`（每种技巧一个可运行程序）与 `example_test.go`，设计见 `docs/DESIGN.md`。
