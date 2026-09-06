@@ -198,6 +198,11 @@ func (t *Transformer) SetTrace(fn func(Event))
 - **3.2 输出 sink**：`SetSink(func([]byte))`，提交点之后的输出在每次 Write 末尾交给回调，缓冲随后复用；提交前攒下的大缓冲
   在第一次交付后丢弃，之后每条流只持有一块块大小的缓冲。1MB / 16KB 分块：77 次 1.2MB → 17 次 168KB，2.7 → 4.2 GB/s。
   这是洞察 1 里"减少垃圾"的主项：网关侧每请求的输出垃圾从与输入等量降到常数（wrapper 接入待 ason 发布后做）。
+- **派发路径**：profile 显示派发密集体四分之一的时间在拷贝 136 字节的 `Action`（协议返回后又按值经过 valueStart / apply /
+  beginRegion）和 key 驻留 map 的探测。现在 `apply` / `beginRegion` 取 `*Action`，字段收紧到 112 字节；驻留 map（上限 4096 项，
+  多 key 文档下每条流几百 KB）换成 256 槽直接映射缓存（FNV-1a，固定 4KB）。5000 个不同 key：793KB → 148KB / 流，57 → 88 MB/s；
+  Claude 密集 137 → 153 MB/s。剩下的拷贝是回调按值返回 `Action` 本身（公开 API），再往下要把 `Wrap` 改成 string 参数才能压到 64 字节以内，
+  与 Higress hooks 一起改。
 
 ## M2 · v0.3 —— 边界能力
 
