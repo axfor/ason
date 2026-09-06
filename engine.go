@@ -376,6 +376,7 @@ func (t *Transformer) scan(p []byte) {
 		rs = 0
 	}
 	i := 0
+scan:
 	for i < len(p) && !t.dead {
 		c := p[i]
 		switch t.st {
@@ -454,6 +455,12 @@ func (t *Transformer) scan(p []byte) {
 				i++
 				continue
 			}
+			if j := scanStringBody(p, i); j > i { // 普通字节成段追加
+				t.keyBuf = append(t.keyBuf, p[i:j]...)
+				t.kvRaw = append(t.kvRaw, p[i:j]...)
+				i = j
+				continue
+			}
 			if c < 0x20 {
 				t.Bail("key 里有未转义的控制字符")
 				continue
@@ -466,29 +473,31 @@ func (t *Transformer) scan(p []byte) {
 				i++
 				continue
 			}
-			if c == '"' {
-				t.st = sIdle
-				t.kvRaw = append(t.kvRaw, c)
-				t.onKeyDone()
-				i++
-				continue
-			}
-			t.keyBuf = append(t.keyBuf, c)
+			// c == '"'
+			t.st = sIdle
 			t.kvRaw = append(t.kvRaw, c)
+			t.onKeyDone()
 			i++
 		case sInScalar:
 			if isScalarByte(c) {
 				if t.lit.kind == KindNumber { // 内联的表驱动 DFA：数字是区域内最常见的标量
-					t.lit.num = numStep(t.lit.num, c)
-					if t.lit.num == nsBad {
-						t.Bail("非法的标量字面量")
-						continue
+					for i < len(p) && isScalarByte(p[i]) {
+						t.lit.num = numStep(t.lit.num, p[i])
+						if t.lit.num == nsBad {
+							t.Bail("非法的标量字面量")
+							continue scan
+						}
+						i++
 					}
-				} else if !t.lit.step(c) {
-					t.Bail("非法的标量字面量")
 					continue
 				}
-				i++
+				for i < len(p) && isScalarByte(p[i]) {
+					if !t.lit.step(p[i]) {
+						t.Bail("非法的标量字面量")
+						continue scan
+					}
+					i++
+				}
 				continue
 			}
 			if !t.lit.done() {
@@ -515,31 +524,46 @@ func (t *Transformer) scan(p []byte) {
 				continue
 			}
 			if t.regOpen {
-				// 区域内部：只跟踪结构，不派发
-				switch c {
-				case '"':
-					t.st = sInStr
-					t.esc = false
-				case '{', '[':
-					t.depth++
-				case '}', ']':
-					t.depth--
-					if t.depth == t.regDepth {
-						rs = t.flush(p, rs, i+1)
-						t.endRegion()
-						t.afterValue()
-					} else if t.depth < t.regDepth {
-						t.Bail("JSON 结构不平衡")
-					}
-				case ',', ':':
-				default:
-					if !t.lit.start(c) {
-						t.Bail("非法字符")
+				// 区域内部：只跟踪结构，不派发。紧凑循环一口气吃掉结构字符与空白，
+				// 只在进入字符串 / 标量或区域闭合时回到外层状态机。
+				for i < len(p) {
+					c = p[i]
+					if jsonSpace[c] {
+						i++
 						continue
 					}
-					t.st = sInScalar
+					switch c {
+					case '"':
+						t.st = sInStr
+						t.esc = false
+						i++
+						continue scan
+					case '{', '[':
+						t.depth++
+					case '}', ']':
+						t.depth--
+						if t.depth == t.regDepth {
+							rs = t.flush(p, rs, i+1)
+							t.endRegion()
+							t.afterValue()
+							i++
+							continue scan
+						} else if t.depth < t.regDepth {
+							t.Bail("JSON 结构不平衡")
+							continue scan
+						}
+					case ',', ':':
+					default:
+						if !t.lit.start(c) {
+							t.Bail("非法字符")
+							continue scan
+						}
+						t.st = sInScalar
+						i++
+						continue scan
+					}
+					i++
 				}
-				i++
 				continue
 			}
 			if t.rootDone {
