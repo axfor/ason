@@ -98,7 +98,7 @@ func (h *ToolsHook) OnPrefix(t *Transformer, raw []byte, complete bool) (Action,
 		return Skip(), 0
 	}
 	t.W().KeyRaw(t.KeyRaw())
-	return Pass().Wrap([]byte(`"`), []byte(`"`)), 0
+	return Pass().Wrap(lit0, lit0), 0
 }
 
 // OnLeave：tools[i] 闭合时补官方 struct 里没有 omitempty 的 name

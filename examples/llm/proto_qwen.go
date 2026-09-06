@@ -436,21 +436,21 @@ func (p *qwenProto) OnPrefix(t *Transformer, raw []byte, complete bool) (Action,
 		}
 		p.reasoningSeen = true
 		w.KeyRaw(t.KeyRaw())
-		return Pass().Wrap([]byte(`"`), []byte(`"`)), 0
+		return Pass().Wrap(lit0, lit0), 0
 	case 5: // part.text → {"text":…}
 		if empty {
 			w.Open() // {}
 			return Skip(), 0
 		}
 		w.KeyRaw(t.KeyRaw())
-		return Pass().Wrap([]byte(`"`), []byte(`"`)), 0
+		return Pass().Wrap(lit0, lit0), 0
 	case 6: // image_url.url → {"image":…}
 		if empty {
 			w.Open()
 			return Skip(), 0
 		}
 		w.Key("image")
-		return Pass().Wrap([]byte(`"`), []byte(`"`)), 0
+		return Pass().Wrap(lit0, lit0), 0
 	}
 	return Bail("意外的 Prefix: " + t.PathString()), 0
 }

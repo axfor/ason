@@ -578,10 +578,10 @@ func (p *claudeProto) OnPrefix(t *Transformer, raw []byte, complete bool) (Actio
 			return Skip(), 0 // {"type":"text"}，与官方 omitempty 一致
 		}
 		w.Key("text")
-		return Pass().Wrap([]byte(`"`), []byte(`"`)), 0
+		return Pass().Wrap(lit0, lit0), 0
 	}
 	dec, off := unescapePrefix(raw)
-	if !bytes.HasPrefix(dec, []byte("data:")) {
+	if !bytes.HasPrefix(dec, lit1) {
 		w.Key("type")
 		w.RawString(`"image"`)
 		w.Key("source")
@@ -589,7 +589,7 @@ func (p *claudeProto) OnPrefix(t *Transformer, raw []byte, complete bool) (Actio
 			w.RawString(`{"type":"url"}`) // Url omitempty
 			return Skip(), 0
 		}
-		return Pass().Wrap([]byte(`{"type":"url","url":"`), []byte(`"}`)), 0
+		return Pass().Wrap(lit2, lit3), 0
 	}
 	semi := bytes.IndexByte(dec, ';')
 	if semi < 0 {
@@ -604,7 +604,7 @@ func (p *claudeProto) OnPrefix(t *Transformer, raw []byte, complete bool) (Actio
 	if !complete && len(rest) < len("base64,") {
 		return Bail("data URL 头在窗口边界被截断"), 0
 	}
-	if bytes.HasPrefix(rest, []byte("base64,")) {
+	if bytes.HasPrefix(rest, lit4) {
 		resumeDec += len("base64,")
 	}
 	resume := off[resumeDec]
@@ -627,7 +627,7 @@ func (p *claudeProto) OnPrefix(t *Transformer, raw []byte, complete bool) (Actio
 		return Skip(), 0
 	}
 	pre = append(pre, `,"data":"`...)
-	return Pass().Wrap(pre, []byte(`"}`)), resume
+	return Pass().Wrap(pre, lit3), resume
 }
 
 // ---- 容器闭合 ----

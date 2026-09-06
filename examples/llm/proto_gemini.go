@@ -412,20 +412,20 @@ func (p *geminiProto) OnPrefix(t *Transformer, raw []byte, complete bool) (Actio
 			return Skip(), 0
 		}
 		w.Key("parts")
-		return Pass().Wrap([]byte(`[{"text":"`), []byte(`"}]`)), 0
+		return Pass().Wrap(lit5, lit6), 0
 	case 5: // text part
 		if complete && len(raw) == 0 {
 			w.Open() // {}
 			return Skip(), 0
 		}
 		w.KeyRaw(t.KeyRaw())
-		return Pass().Wrap([]byte(`"`), []byte(`"`)), 0
+		return Pass().Wrap(lit0, lit0), 0
 	}
 	dec, off := unescapePrefix(raw)
 	if isHTTPURLPrefix(dec) {
 		return Bail("http(s) 图片官方会异步抓取后内联，流式无法复刻"), 0
 	}
-	if !bytes.HasPrefix(dec, []byte("data:")) {
+	if !bytes.HasPrefix(dec, lit1) {
 		if !complete {
 			return Bail("非 data: 的图片串超出前缀窗口"), 0
 		}
@@ -448,7 +448,7 @@ func (p *geminiProto) OnPrefix(t *Transformer, raw []byte, complete bool) (Actio
 	if !complete && len(rest) < len("base64,") {
 		return Bail("data URL 头在窗口边界被截断"), 0
 	}
-	if bytes.HasPrefix(rest, []byte("base64,")) {
+	if bytes.HasPrefix(rest, lit4) {
 		resumeDec += len("base64,")
 	}
 	resume := off[resumeDec]
@@ -459,7 +459,7 @@ func (p *geminiProto) OnPrefix(t *Transformer, raw []byte, complete bool) (Actio
 	w.RawString(`{"mimeType":`)
 	w.JSONString(mime)
 	w.RawString(`,"data":"`)
-	return Pass().Wrap(nil, []byte(`"}`)), resume
+	return Pass().Wrap(nil, lit3), resume
 }
 
 // ---- 容器闭合 ----
@@ -527,7 +527,7 @@ func (p *geminiProto) finishMessage(t *Transformer) {
 			}
 		}
 		if !m.contentSeen {
-			p.sysSeen, p.sysParts = true, []byte("[]")
+			p.sysSeen, p.sysParts = true, lit7
 		}
 		return
 	}
@@ -678,5 +678,5 @@ func isHTTPURLPrefix(b []byte) bool {
 		}
 		l = append(l, c)
 	}
-	return bytes.HasPrefix(l, []byte("http://")) || bytes.HasPrefix(l, []byte("https://"))
+	return bytes.HasPrefix(l, lit8) || bytes.HasPrefix(l, lit9)
 }

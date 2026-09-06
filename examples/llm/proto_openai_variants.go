@@ -93,14 +93,14 @@ func (v *ZhipuVariant) Tail(t *Transformer, st *OpenAIState) {
 		thinking = v.thinkRaw
 	}
 	if v.effortSeen && gjsonStringNonEmpty(v.effortRaw) {
-		thinking = []byte(`{"type":"enabled"}`) // sjson 用 map 整体替换
+		thinking = lit10 // sjson 用 map 整体替换
 	} else if v.effortSeen {
 		w.Key("reasoning_effort")
 		w.Raw(v.effortRaw)
 	}
 	if st.ReasoningSeen {
 		var err error
-		thinking, err = setObjectKey(thinking, "clear_thinking", []byte("false"))
+		thinking, err = setObjectKey(thinking, "clear_thinking", lit11)
 		if err != nil {
 			t.Bail("thinking 不是对象，sjson 的处理方式未复刻")
 			return

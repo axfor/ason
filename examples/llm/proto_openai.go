@@ -235,7 +235,7 @@ func (p *openaiProto) OnPrefix(t *Transformer, raw []byte, complete bool) (Actio
 			p.st.ReasoningSeen = true
 		}
 		t.W().KeyRaw(t.KeyRaw())
-		return Pass().Wrap([]byte(`"`), []byte(`"`)), 0
+		return Pass().Wrap(lit0, lit0), 0
 	}
 	return Bail("意外的 Prefix: " + t.PathString()), 0
 }
