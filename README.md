@@ -38,7 +38,9 @@ that keeps the original bytes until then can fall back to another strategy when 
 
 The scanner validates JSON with the same rejection surface as `encoding/json` (literals, number grammar,
 escapes, control characters, whitespace), byte by byte, with constant state. String bodies are scanned eight
-bytes at a time; long strings and base64 payloads stream at roughly 2.5 GB/s per core.
+bytes at a time; long strings and base64 payloads stream at roughly 2.5 GB/s per core, dense structure at
+roughly 470 MB/s, with a few hundred allocations per megabyte regardless of how many keys the document has.
+`SetBudget` caps the total the engine may hold for one document; `Buffered()` reports it.
 
 ## Examples
 
