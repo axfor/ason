@@ -110,7 +110,11 @@ type Transformer struct {
 	rootCloseWs []byte
 	tailWs      []byte            // 根对象之后的空白（如尾部换行）：Finish 时原样吐出
 	keys        map[string]string // key 驻留表：重复出现的 key 不再分配（上限 internKeysMax 个）
-	leadWs      []byte            // 根对象之前的空白：根打开时原样吐出
+
+	commit        int    // 提交点窗口；0 = CommitBytes
+	budget        int    // 所有缓冲之和的上限；0 = 不限
+	deferredBytes int    // 当前所有派发帧里 Defer 项占用的字节数
+	leadWs        []byte // 根对象之前的空白：根打开时原样吐出
 
 	regOpen  bool
 	regT     regionTarget
@@ -139,6 +143,38 @@ func NewTransformer(p Protocol) *Transformer {
 }
 
 // ---- 对外：Guard 语义 ----
+
+// SetCommitBytes 设置本转换器的提交点窗口（0 恢复包默认 CommitBytes）。必须在第一次 Write 之前调用。
+func (t *Transformer) SetCommitBytes(n int) { t.commit = n }
+
+// SetBudget 设置所有缓冲（Capture / Observe / Prefix 窗口、Defer 暂存、提交前攒着的输出）之和的上限，
+// 超过即判定不支持（"缓冲预算超限"）。0 = 不限。这是内存上界的总量保证；各处 cap 仍是单项约束。
+func (t *Transformer) SetBudget(n int) { t.budget = n }
+
+// Buffered 报告当前持有的缓冲字节数（观测用）。
+func (t *Transformer) Buffered() int {
+	n := len(t.capBuf) + t.deferredBytes
+	if !t.committed {
+		n += len(t.w.buf)
+	}
+	return n
+}
+
+func (t *Transformer) commitBytes() int {
+	if t.commit > 0 {
+		return t.commit
+	}
+	return CommitBytes
+}
+
+// checkBudget 在缓冲增长处调用。
+func (t *Transformer) checkBudget(extra int) bool {
+	if t.budget > 0 && t.Buffered()+extra > t.budget {
+		t.Bail("缓冲预算超限: " + t.PathString())
+		return false
+	}
+	return true
+}
 
 // Committed 报告是否已越过提交点。越过之后再判定不支持，已发出的字节收不回来。
 func (t *Transformer) Committed() bool { return t.committed }
@@ -180,8 +216,13 @@ func (t *Transformer) Write(p []byte) {
 	t.scanned += len(p)
 	t.w.reserve(len(p)) // 一块输出只分配一次缓冲（按上次交出的大小预留）
 	t.scan(p)
-	if !t.committed && !t.unsupported && t.scanned >= CommitBytes {
-		t.committed = true
+	if !t.committed && !t.unsupported {
+		if !t.checkBudget(0) {
+			return
+		}
+		if t.scanned >= t.commitBytes() {
+			t.committed = true
+		}
 	}
 }
 
@@ -298,7 +339,15 @@ func (t *Transformer) Deferred() []DeferredKV {
 // DropDeferred 丢弃当前派发帧里 Defer 的项。
 func (t *Transformer) DropDeferred() {
 	if f := t.top(); f != nil {
+		t.forgetDeferred(f)
 		f.deferred = nil
+	}
+}
+
+// forgetDeferred 把一帧里 Defer 项的字节从计数里扣掉（回放或丢弃时）。
+func (t *Transformer) forgetDeferred(f *frame) {
+	for _, d := range f.deferred {
+		t.deferredBytes -= len(d.KeyRaw) + len(d.Raw)
 	}
 }
 
@@ -787,6 +836,9 @@ func (t *Transformer) emitRegion(b []byte) {
 	case rtPrefix:
 		room := t.regCap - len(t.capBuf)
 		if room >= len(b) {
+			if !t.checkBudget(len(b)) {
+				return
+			}
 			t.capBuf = append(t.capBuf, b...)
 			return
 		}
@@ -804,6 +856,9 @@ func (t *Transformer) emitRegion(b []byte) {
 func (t *Transformer) capAppend(b []byte) {
 	if t.regCap > 0 && len(t.capBuf)+len(b) > t.regCap {
 		t.Bail("缓冲超过上限: " + t.PathString())
+		return
+	}
+	if !t.checkBudget(len(b)) {
 		return
 	}
 	t.capBuf = append(t.capBuf, b...)
@@ -862,6 +917,7 @@ func (t *Transformer) endRegion() {
 		raw := make([]byte, len(t.capBuf))
 		copy(raw, t.capBuf)
 		f.deferred = append(f.deferred, DeferredKV{Key: t.regKey, KeyRaw: append([]byte(nil), t.kvRaw...), Raw: raw})
+		t.deferredBytes += len(t.kvRaw) + len(raw)
 	case rtPrefix:
 		t.runPrefix(true)
 		if t.dead {
@@ -978,6 +1034,7 @@ func (t *Transformer) doRelease() {
 		return
 	}
 	kvs := f.deferred
+	t.forgetDeferred(f)
 	f.deferred = nil
 	for _, kv := range kvs {
 		if t.dead {
