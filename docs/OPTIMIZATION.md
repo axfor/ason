@@ -1,0 +1,297 @@
+# ason 优化方案（v0.2 → v0.5）
+
+## 零、深度洞察：数据告诉我们的事
+
+下面每一条都来自这一轮的实测，不是推测；优化方案的取舍以此为据。
+
+**1. 引擎已经不是热点，宿主边界才是。**
+1MB 请求在 Envoy 里每请求约 14ms CPU，其中引擎扫描本身不到 0.5ms（字符串 / base64 2.5 GB/s）；
+其余是宿主往 wasm 拷贝分块（`proxy_on_memory_allocate`）、再拷回、以及 Go 运行时的 GC。
+结论：继续压扫描器的收益在网关里几乎看不见；有收益的是减少边界拷贝（零拷贝 key、直写 sink）和减少垃圾（更少的中间切片）。
+结构密集体 420 MB/s 的短板是真实的，但只影响"tools 定义占主体"的请求，且 SWAR 化复杂度最高——放到最后、按 profile 决定。
+
+**2. 内存的上限不由引擎单独决定。**
+`Out()` 交出所有权后，一条流在提交点之后的存活只有几十 KB；800 并发时网关多出的内存一半是 Envoy 每连接开销，
+另一半曾经是 Go 运行时 GC 停摆造成的堆膨胀（与引擎无关，靠 wrapper 看门狗兜住）。
+结论：引擎要给的是**可证明的上界**——单项 cap 不构成保证（一个协议有十几处 cap），必须有总预算（`SetBudget`）与可观测的 `Buffered()`，
+再配合宿主侧的看门狗，链路上每一层的内存都有上界，"2000 并发内存持平"才是可复现的结论而不是一次实验。
+
+**3. 保真类缺陷聚集在"协议不碰的边界"。**
+黄金差分与模糊测试抓到的问题——`1e0` 格式化、逗号前空白、根前空白、根后换行、重复 key、`tools:[null]`、`parameters:5`——
+没有一个在协议逻辑里，全在字面量 / 空白 / 重复 / 类型这些边界语义上。
+结论：边界语义必须由引擎统一持有，协议不能有机会写错：`Probe` 报出 null/bool/number、严格校验、空白保真都已进引擎，
+下一步把重复 key 策略、根形状、总预算也收进引擎（M2），协议只剩"我关心的 key 怎么写"。
+
+**4. 顺序无关是通过"有界回放"换来的，回落是这个设计的一部分而不是失败。**
+`Defer + Release` 让 content 先于 role 到达也能流式；上限之外只能回落。实测 Claude 套件 1230 条里已知回落 5 条、
+Qwen 兼容 189 条（几乎都是 developer role 这类"目标形状要求 struct 往返"的形态）。
+结论：回落率是运行指标而不是缺陷，窗口大小是部署策略而不是常量——所以 `CommitBytes` / 预算要按转换器可配（M2），
+指标要按 `Error.Code` 分类（M1）。
+
+**5. 写协议的成本在"派发"，不在"转换"。**
+Claude 协议约一半代码是 `switch t.Depth()` 的路径分支；曾经的两类静默错误——漏转发某个回调、深度判断错——
+一类已由 `Via` 消灭（引擎路由子树），另一类要由 Router 消灭（引擎路由路径）。
+结论：**where 声明式、what 命令式**：路径匹配进引擎层，动作与写法仍手写，可读性与可验证性不倒退。
+
+**6. 在同类里的位置。**
+sjson / gjson：整体缓冲的原地改写与取值，保真但不流式；simdjson / sonic：极快的物化解析，不改写、不流式；
+SAX / 事件式解析器：流式但只解析，没有写出器与保真；jq `--stream`、Envoy ext_proc：事件或整体，都不能"边到边改还能回落"。
+ason 独有的是三件事的组合：流式改写 + 字节保真 + **提交点前可回落的事务式前缀**。最后一项是它能进代理数据面的原因，
+也是文档里应当作为核心抽象来讲的东西。
+
+**7. 风险。**
+引擎核心 2000 行，一切新能力都应作为上层（Router、Stream、difftest、sse）而不是往核心里塞；
+公开 API 尚未定型（错误类型、根形状、预算），越早定越好；文档全中文是对外采用的硬门槛。
+
+---
+
+目标：在不动"单遍流式、有界缓冲、字节保真、严格校验、提交点回落"这五条底座的前提下，
+把**写协议的生产力**、**边界能力**、**性能上限**和**生态工具**做到同类库里最好。
+每一项都给出 API 草图、语义、兼容性与验收标准；里程碑按依赖顺序排列，公开 API 的改动放在最前面。
+
+不变的设计约束（任何优化都不能违反）：
+
+1. 不建 DOM，不物化文档；协议只在明确要求的地方缓冲，且都有上限。
+2. 没动的字节一个不改；原位改写与 sjson 逐字节一致。
+3. 不对字段顺序做假设；需要后面的字段才能决定的形状用有界 `Defer` 回放。
+4. 判定不支持有出路：提交点之前调用方能干净回落。
+5. 零第三方依赖，`wasip1` 可构建。
+
+---
+
+## M1 · v0.2 —— 写协议的生产力
+
+### 1.1 结构化错误与英文文案
+
+现状：`Bail(reason string)` 只有一个中文字符串，没有位置；调用方（Higress guard、差分 harness）靠子串匹配区分回落原因。
+
+设计：
+
+```go
+type Code uint8
+
+const (
+	ErrNone Code = iota
+	ErrSyntax        // 不符合 JSON 文法（字面量、数字、转义、控制字符、结构）
+	ErrRoot          // 根不是对象（或 Root 选项不允许的形状）
+	ErrTrailing      // 根之后有非空白内容
+	ErrDuplicateKey  // 派发帧里重复 key（DupKeys 策略为 Bail 时）
+	ErrLimit         // 某个 Capture / Defer / Prefix 超过上限，或总预算超限
+	ErrLeftoverDefer // 容器闭合时仍有未回放的 Defer 项
+	ErrUnsupported   // 协议调用 Bail：它无法表达这个形状
+)
+
+type Error struct {
+	Code   Code
+	Msg    string // 英文；协议 Bail 的原文原样保留
+	Offset int64  // 输入字节偏移（发生位置）
+	Path   string // 发生时的路径（"messages[2].content"）
+}
+
+func (e *Error) Error() string
+
+func (t *Transformer) Err() *Error              // nil 表示正常
+func (t *Transformer) Unsupported() (bool, string) // 保留：等价于 Err() != nil, Err().Msg
+func Bail(reason string) Action                  // 保留：Code = ErrUnsupported
+func BailCode(code Code, reason string) Action   // 新增
+func (t *Transformer) BailErr(code Code, reason string)
+```
+
+- 引擎内部所有 `Bail("中文")` 改为带 Code 的英文文案；`Offset` 取扫描器当前偏移，`Path` 取 `PathString()`。
+- 兼容：`Unsupported()`、`Bail(string)` 不变；Higress guard 从子串匹配改为按 `Code` 归类（`ErrDuplicateKey` 等），
+  差分 harness 的"允许的回落原因"同样改为 Code。协议自己的 Bail 文案（Higress 里是中文）不受影响。
+- 验收：引擎测试里所有断言改为断言 Code；`examples/llm` 黄金差分零变化。
+
+### 1.2 Router：声明式路径匹配
+
+现状：协议是 `switch t.Depth()` + `t.Last()` 的手写分支，Claude 协议约一半代码是派发逻辑；漏写一个深度就是静默错误。
+
+设计：建立在回调之上的一层，引擎不变。
+
+```go
+type Router struct{ /* 模式 trie */ }
+
+func NewRouter() *Router
+
+// 模式语法：段用 "/" 分隔；字面 key；"*" 任意一个 key 或下标；"#" 任意下标；"**" 任意深度的后缀。
+// key 含 "/" 或 "*" 时用 Path() 构造器。
+func (r *Router) Key(pattern string, h func(t *Transformer) Action) *Router
+func (r *Router) Elem(pattern string, h func(t *Transformer) Action) *Router
+func (r *Router) Start(pattern string, h func(t *Transformer, kind ValueKind) Action) *Router // Probe 之后
+func (r *Router) Value(pattern string, h func(t *Transformer, raw []byte)) *Router          // Capture / Observe 到齐
+func (r *Router) Prefix(pattern string, h func(t *Transformer, raw []byte, complete bool) (Action, int)) *Router
+func (r *Router) Leave(pattern string, h func(t *Transformer)) *Router
+func (r *Router) Default(a Action) *Router // 没有匹配时的动作（默认 Pass）
+
+// 常用形态的一行写法
+func (r *Router) Rename(pattern, name string) *Router      // Pass().As(name)
+func (r *Router) Skip(pattern string) *Router
+func (r *Router) Capture(pattern string, cap int, h func(t *Transformer, raw []byte)) *Router
+
+func Path(segs ...any) string // Path("messages", Any, "content")；Any / AnyIndex / Rest 为哨兵
+
+// 挂到协议上：Router 实现 Protocol；需要 Tail 等额外逻辑时嵌入它并覆盖
+func (r *Router) Protocol() Protocol
+```
+
+实现要点：
+
+- 模式编译成 trie；每个派发帧维护"当前可达的 trie 节点集合"（进入容器时推进，闭合时弹出），
+  `OnKey` 只在集合里按 key 查一次，`**` 节点常驻。匹配代价与模式数量无关，O(1) 摊销。
+- 多个模式同时命中时取最具体的（字面 > `*` > `**`），同级冲突在注册时报错。
+- 与 `Via` 正交：子 hook 内部也可以用自己的 Router。
+
+验收：用 Router 重写 `examples/chatconv`，行数减半、黄金/随机差分全过；文档给出"手写分支 vs Router"对照。
+
+### 1.3 Trace：可观测的派发
+
+```go
+type Event struct {
+	Kind   EventKind // Dispatch / Start / Region / Capture / Defer / Replay / Bail / Commit / Finish
+	Offset int64
+	Path   string
+	Action string // "Pass.As(role)" 这样的可读形式
+	Bytes  int    // 区域 / 捕获涉及的字节数
+	Note   string
+}
+
+// 为 nil 时零开销（一次 nil 判断）
+func (t *Transformer) SetTrace(fn func(Event))
+```
+
+- `Action` 增加 `String()`。
+- 命令行 `ason-trace -example chatconv < body.json` 打印表格，协议作者第一时间能看到"每个 key 落到了哪个动作"。
+- 验收：Trace 关闭时基准无差异；示例文档附一段 trace 输出。
+
+### 1.4 英文 API 文档
+
+导出标识符的注释全部英文（中文说明移到 docs/），pkg.go.dev 可读；`docs/DESIGN.md` 增加英文版。
+
+---
+
+## M2 · v0.3 —— 边界能力
+
+### 2.1 根形状与多文档流
+
+```go
+type RootKind uint8
+const (
+	RootObject RootKind = iota // 默认，兼容现状
+	RootArray
+	RootAny                    // 对象或数组
+)
+func (t *Transformer) SetRoot(RootKind)
+
+// 多文档（NDJSON / 连续 JSON）：逐文档实例化协议，文档之间的空白原样保留
+type Stream struct{ /* ... */ }
+func NewStream(newProtocol func() Protocol, opts ...StreamOption) *Stream
+func (s *Stream) Write(p []byte)
+func (s *Stream) Out() []byte
+func (s *Stream) Finish() []byte
+func (s *Stream) Err() *Error
+```
+
+- 根数组：路径深度 1 是下标，`OnElem` 派发；其余语义不变。
+- Stream：扫描到根闭合即完成一个文档，复位后开始下一个；某文档判定不支持则整个流停止（简单、可预期）。
+
+### 2.2 每个转换器自己的窗口与总预算
+
+```go
+func (t *Transformer) SetCommitBytes(n int) // 0 = 包默认 64KB
+func (t *Transformer) SetBudget(n int)      // 所有 Capture / Defer / Prefix 缓冲与提交前输出之和的上限；超限 → ErrLimit
+func (t *Transformer) Buffered() int        // 当前持有的字节数（观测）
+```
+
+- 预算是"总量"约束，协议里各处的 cap 仍是"单项"约束；两者取严。
+- Higress 的 model-router 可把窗口设为 16KB，减少提交前的持有。
+
+### 2.3 重复 key 策略
+
+```go
+type DupKeys uint8
+const (
+	DupKeysPass DupKeys = iota // 默认：不检查（透传语义）
+	DupKeysBail                // 现在的 DupKeyBail = true
+	DupKeysFirst               // 取第一个，后面的同名 key 自动 Skip（gjson 语义）
+)
+func (t *Transformer) SetDupKeys(DupKeys)
+```
+
+`DupKeyBail` 字段保留为 `DupKeysBail` 的别名。KeyProbe / ai-statistics 里各自实现的"取第一个"收进引擎。
+
+### 2.4 可选 UTF-8 校验
+
+`SetValidateUTF8(true)`：字符串快路径遇到 ≥ 0x80 的字节才进入 UTF-8 DFA（Höhrmann 状态机，跨块保持状态），
+非法序列 → `ErrSyntax`。默认关闭——encoding/json 本身不拒绝非法 UTF-8。
+
+---
+
+## M3 · v0.4 —— 性能上限
+
+现状：长字符串 / base64 约 2.5 GB/s（SWAR），结构密集体约 420 MB/s。后者的成本是派发帧与区域里逐字节的 `switch`
+和字面量校验。做之前先 profile，按收益排序：
+
+1. **零拷贝 key**：key 与其周围空白不跨块时，`kvRaw` 直接切片输入缓冲（回调期间有效，已是约定），跨块才拷贝。
+   预期：派发帧密集的输入分配减半。
+2. **输出 sink**：`SetSink(io.Writer)`，提交点之后的输出直接写入，不再经 `Out()` 交接切片；提交前仍需缓冲。
+3. **区域内的 SWAR 结构扫描**：8 字节一组找出 `" { } [ ] \` 与首个非结构字节，配合 popcount 更新深度；
+   字面量校验仍逐字节但只在标量段内。预期结构密集体 1.5–2×。复杂度最高，只有 profile 证明值得才做。
+4. **wasm 基准进 CI**：`GOOS=wasip1 GOARCH=wasm go test -c`，用 wazero 运行 `-test.bench`，把目标环境的数字放进 README。
+
+验收：`bench_test.go` 三类输入的数字进 README；任何一项不能让黄金差分产生变化。
+
+---
+
+## M4 · v0.5 —— 生态
+
+### 4.1 `ason/difftest`：通用差分 harness
+
+把 `examples/llm/golden_test.go` 的做法做成包：
+
+```go
+type Suite struct {
+	Name      string
+	New       func(cfg map[string]any) *Transformer
+	Reference func(in []byte, cfg map[string]any) (map[string]any, error) // 可选：在线参照
+	Golden    string                                                         // 或离线黄金 JSONL(.gz)
+	Chunks    []int
+	Canon     func(m map[string]any)                                         // 比对前归一（如 tools 参数子树按数值）
+	Lenient   func(refErr error) bool                                        // 参照失败但流式可放行
+	Fallback  func(err *Error) bool                                          // 参照成功但允许的回落
+}
+func Run(t *testing.T, s Suite)
+func WriteGolden(path string, s Suite, inputs []Case)  // 用参照生成黄金
+```
+
+### 4.2 `ason/gen`：随机 JSON 形状生成器
+
+`gen.Spec` 描述字段、类型分布、顺序打乱、转义、大小；各套件共用，替换现在每处一份的生成器。
+
+### 4.3 `ason/sse`：事件流伴侣
+
+响应方向是一串小 JSON 事件（SSE）。`sse.Splitter` 处理 `data:` 多行、注释、`[DONE]`；`sse.Transform(factory)` 对每个事件
+用一个新 Transformer 转换、保持帧边界。LLM 响应转换由此也能流式化。
+
+### 4.4 文档
+
+英文 README / DESIGN；"写一个协议"教程（以 chatconv 从手写分支到 Router 的演进为线索）；覆盖率与 pkg.go.dev 徽章。
+
+---
+
+## 兼容性与迁移
+
+- v0.x 阶段每个里程碑一个 minor 版本；旧 API 保留至少一个版本并标 Deprecated。
+- Higress 迁移点：M1 把 guard 与 harness 的回落判定改为 `Error.Code`；M2 让 model-router 设 16KB 窗口、ai-statistics 用 `DupKeysFirst`；
+  M3 无 API 变化；M4 用 `difftest` 替换仓内差分 harness 的公共部分。
+- 每个里程碑的验收都包含：`examples/llm` 黄金差分（7 套、7456 条、4 种分块）零变化。
+
+## 顺序与估算
+
+| 里程碑 | 内容 | 估算 |
+|---|---|---|
+| M1 v0.2 | 结构化错误 + 英文文案 → Router（chatconv 重写）→ Trace → 英文文档 | 3 天 |
+| M2 v0.3 | 根形状 / 多文档流 → 窗口与预算 → 重复 key 策略 → UTF-8 选项 | 2 天 |
+| M3 v0.4 | 零拷贝 key → sink → wasm 基准 → （视 profile）区域 SWAR | 2 天 |
+| M4 v0.5 | difftest → gen → sse → 教程 | 3 天 |
+
+先做 M1 的结构化错误：它改公开 API，越早定型越好，后面的 Router / Trace 都建立在它之上。

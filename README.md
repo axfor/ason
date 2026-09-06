@@ -72,7 +72,7 @@ Go 1.24 and stable, plus a short native fuzz job and a `wasip1` build):
   each, compared field by field with the output of the reference (buffered) implementations at four chunk sizes;
 - **fuzz**: `FuzzPassthrough` and `FuzzKeyProbe` (`go test -fuzz=FuzzPassthrough .`).
 
-Design notes: [docs/DESIGN.md](docs/DESIGN.md).
+Design notes: [docs/DESIGN.md](docs/DESIGN.md). Roadmap and the reasoning behind it: [docs/OPTIMIZATION.md](docs/OPTIMIZATION.md).
 
 ## 中文说明
 
@@ -83,4 +83,4 @@ ason 是 Go 的通用流式 JSON 转换框架：文档边到达边改写，按�
 
 协议就是一组回调：扫描器对每个 key / 数组元素向协议要一个动作（Pass / Skip / Enter / Probe / Observe / Capture / Defer / Prefix / Bail），
 写出器惰性建层，输出在 64KB 提交点之后才下发——调用方在此之前保留原始字节，协议判定不支持时可以换一条路。
-扫描器按 `encoding/json` 的拒绝面逐字节校验，常数状态。示例见 `examples/`（每种技巧一个可运行程序）与 `example_test.go`，设计见 `docs/DESIGN.md`。
+扫描器按 `encoding/json` 的拒绝面逐字节校验，常数状态。示例见 `examples/`（每种技巧一个可运行程序）与 `example_test.go`，设计见 `docs/DESIGN.md`，优化方案与洞察见 `docs/OPTIMIZATION.md`。
