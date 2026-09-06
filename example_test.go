@@ -8,7 +8,7 @@ import (
 	"github.com/axfor/ason"
 )
 
-// feed 分块喂入并收尾，返回输出与是否判定不支持。
+// feed 分块喂入并收尾，返回输出与不支持的原因。
 func feed(tr *ason.Transformer, in string, chunk int) (string, string) {
 	var out bytes.Buffer
 	for i := 0; i < len(in); i += chunk {
@@ -28,45 +28,45 @@ func feed(tr *ason.Transformer, in string, chunk int) (string, string) {
 
 // 透传：BaseProtocol 对一切返回 Pass，没动的字节一个不改（空白、顺序、转义都保留）。
 func Example_passthrough() {
-	in := "{\n  \"model\" : \"m\" ,\n  \"messages\" : [ { \"role\" : \"user\" } ]\n}\n"
+	in := "{\n  \"id\" : 1 ,\n  \"items\" : [ { \"k\" : \"v\" } ]\n}\n"
 	out, _ := feed(ason.NewTransformer(ason.BaseProtocol{}), in, 3)
 	fmt.Println(out == in)
 	// Output: true
 }
 
-// 改名：OnKey 返回 Pass().As(新名)。
+// 改名：OnKey 返回 Pass().As(新名)。只改顶层，嵌套里的同名 key 不动。
 type renameProto struct{ ason.BaseProtocol }
 
 func (renameProto) OnKey(t *ason.Transformer) ason.Action {
-	if t.Depth() == 1 && t.Last() == "max_tokens" {
-		return ason.Pass().As("max_completion_tokens")
+	if t.Depth() == 1 && t.Last() == "count" {
+		return ason.Pass().As("total")
 	}
 	return ason.Pass()
 }
 
 func Example_rename() {
-	out, _ := feed(ason.NewTransformer(renameProto{}), `{"model":"m","max_tokens":10,"n":{"max_tokens":1}}`, 5)
+	out, _ := feed(ason.NewTransformer(renameProto{}), `{"id":"m","count":10,"n":{"count":1}}`, 5)
 	fmt.Println(out)
-	// Output: {"model":"m","max_completion_tokens":10,"n":{"max_tokens":1}}
+	// Output: {"id":"m","total":10,"n":{"count":1}}
 }
 
-// 原位改写：KeyProbe 捕获顶层 key，回调里决定替换值；其余字节直通。
+// 原位改写：KeyProbe 捕获顶层 key，回调里决定替换值；其余字节直通，捕获到的原始值可随后读取。
 func Example_rewrite() {
 	tr := ason.NewKeyProbeTransformer(ason.KeyProbeOptions{
-		Keys: map[string]int{"model": 4096},
+		Keys: map[string]int{"owner": 4096},
 		OnKey: func(t *ason.Transformer, key string, raw []byte) ([]byte, bool) {
-			if i := bytes.IndexByte(raw, '/'); i >= 0 { // "provider/model" → "model"
+			if i := bytes.IndexByte(raw, '/'); i >= 0 { // "team/42" → "42"
 				return append([]byte(`"`), raw[i+1:]...), true
 			}
 			return nil, false
 		},
 	})
-	out, _ := feed(tr, `{"messages":[{"role":"user","content":"hi"}],"model":"openai/gpt-4o"}`, 7)
+	out, _ := feed(tr, `{"items":[{"k":"v"}],"owner":"team/42"}`, 7)
 	fmt.Println(out)
-	fmt.Println(string(tr.Protocol().(*ason.KeyProbe).Captured()["model"]))
+	fmt.Println(string(tr.Protocol().(*ason.KeyProbe).Captured()["owner"]))
 	// Output:
-	// {"messages":[{"role":"user","content":"hi"}],"model":"gpt-4o"}
-	// "openai/gpt-4o"
+	// {"items":[{"k":"v"}],"owner":"42"}
+	// "team/42"
 }
 
 // 脱敏：Prefix(n) 只攒字符串的前 n 字节，写出前缀后 Skip 掉剩余部分——长字符串不进内存。
@@ -91,23 +91,23 @@ func Example_redact() {
 	// Output: {"api_key":"sk-1***","user":"u"}
 }
 
-// 重组：一个输入容器落到多层嵌套输出——messages 变成 input.messages。
+// 重组：一个输入容器落到多层嵌套输出——items 变成 data.items。
 type nestProto struct{ ason.BaseProtocol }
 
 func (nestProto) OnKey(t *ason.Transformer) ason.Action {
-	if t.Depth() == 1 && t.Last() == "messages" {
+	if t.Depth() == 1 && t.Last() == "items" {
 		return ason.Probe()
 	}
 	return ason.Pass()
 }
 func (nestProto) OnStart(t *ason.Transformer, kind ason.ValueKind) ason.Action {
 	if kind != ason.KindArray {
-		return ason.Bail("messages 不是数组")
+		return ason.Bail("items 不是数组")
 	}
 	w := t.W()
-	w.PushObj("input")
-	w.PushArr("messages")
-	return ason.Enter().Flat() // 元素直接落进自建的 input.messages
+	w.PushObj("data")
+	w.PushArr("items")
+	return ason.Enter().Flat() // 元素直接落进自建的 data.items
 }
 func (nestProto) OnLeave(t *ason.Transformer) {
 	if t.Depth() == 1 {
@@ -119,45 +119,45 @@ func (nestProto) OnLeave(t *ason.Transformer) {
 }
 
 func Example_restructure() {
-	out, _ := feed(ason.NewTransformer(nestProto{}), `{"model":"m","messages":[{"role":"user","content":"a"},{"role":"assistant","content":"b"}],"stream":true}`, 6)
+	out, _ := feed(ason.NewTransformer(nestProto{}), `{"id":"m","items":[{"a":1},{"b":2}],"flag":true}`, 6)
 	fmt.Println(out)
-	// Output: {"model":"m","input":{"messages":[{"role":"user","content":"a"},{"role":"assistant","content":"b"}]},"stream":true}
+	// Output: {"id":"m","data":{"items":[{"a":1},{"b":2}]},"flag":true}
 }
 
-// 回放：content 先于 role 到达时 Defer 起来，见到 role 后 Release 重新派发——不对字段顺序做假设。
-type roleProto struct {
+// 回放：body 先于 kind 到达时 Defer 起来，见到 kind 后 Release 重新派发——不对字段顺序做假设。
+type kindProto struct {
 	ason.BaseProtocol
-	role string
+	kind string
 }
 
-func (p *roleProto) OnKey(t *ason.Transformer) ason.Action {
+func (p *kindProto) OnKey(t *ason.Transformer) ason.Action {
 	switch t.Last() {
-	case "role":
+	case "kind":
 		return ason.Capture(64)
-	case "content":
-		if p.role == "" {
-			return ason.Defer(1 << 20) // 还不知道 role：暂存（有上限）
+	case "body":
+		if p.kind == "" {
+			return ason.Defer(1 << 20) // 还不知道 kind：暂存（有上限）
 		}
-		if p.role == "system" {
-			return ason.Pass().As("instruction")
+		if p.kind == "note" {
+			return ason.Pass().As("text")
 		}
 		return ason.Pass()
 	}
 	return ason.Pass()
 }
-func (p *roleProto) OnValue(t *ason.Transformer, raw []byte) {
-	if t.Last() == "role" {
-		p.role, _ = ason.JSONUnquote(raw)
+func (p *kindProto) OnValue(t *ason.Transformer, raw []byte) {
+	if t.Last() == "kind" {
+		p.kind, _ = ason.JSONUnquote(raw)
 		t.W().KeyRaw(t.KeyRaw())
 		t.W().Raw(raw)
-		t.Release() // 当前值结束后回放 Defer 的 content
+		t.Release() // 当前值结束后回放 Defer 的 body
 	}
 }
 
 func Example_deferReplay() {
-	out, _ := feed(ason.NewTransformer(&roleProto{}), `{"content":"be brief","role":"system"}`, 1)
+	out, _ := feed(ason.NewTransformer(&kindProto{}), `{"body":"be brief","kind":"note"}`, 1)
 	fmt.Println(out)
-	// Output: {"role":"system","instruction":"be brief"}
+	// Output: {"kind":"note","text":"be brief"}
 }
 
 // 子 hook：Enter().Via(hook) 把整棵子树的回调交给另一个 Protocol；容器闭合的 OnLeave 回到发起方。

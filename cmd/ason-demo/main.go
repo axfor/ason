@@ -1,6 +1,6 @@
 // ason-demo：从标准输入按块读 JSON，用选定的示例协议边读边转换，写到标准输出。
 //
-//	echo '{"model":"openai/gpt-4o","messages":[{"role":"user","content":"hi"}]}' | ason-demo -demo rewrite -chunk 7
+//	echo '{"items":[{"k":"v"}],"owner":"team/42"}' | ason-demo -demo rewrite -chunk 7
 package main
 
 import (
@@ -16,8 +16,8 @@ import (
 type renameProto struct{ ason.BaseProtocol }
 
 func (renameProto) OnKey(t *ason.Transformer) ason.Action {
-	if t.Depth() == 1 && t.Last() == "max_tokens" {
-		return ason.Pass().As("max_completion_tokens")
+	if t.Depth() == 1 && t.Last() == "count" {
+		return ason.Pass().As("total")
 	}
 	return ason.Pass()
 }
@@ -25,17 +25,17 @@ func (renameProto) OnKey(t *ason.Transformer) ason.Action {
 type nestProto struct{ ason.BaseProtocol }
 
 func (nestProto) OnKey(t *ason.Transformer) ason.Action {
-	if t.Depth() == 1 && t.Last() == "messages" {
+	if t.Depth() == 1 && t.Last() == "items" {
 		return ason.Probe()
 	}
 	return ason.Pass()
 }
 func (nestProto) OnStart(t *ason.Transformer, kind ason.ValueKind) ason.Action {
 	if kind != ason.KindArray {
-		return ason.Bail("messages 不是数组")
+		return ason.Bail("items 不是数组")
 	}
-	t.W().PushObj("input")
-	t.W().PushArr("messages")
+	t.W().PushObj("data")
+	t.W().PushArr("items")
 	return ason.Enter().Flat()
 }
 func (nestProto) OnLeave(t *ason.Transformer) {
@@ -59,7 +59,7 @@ func main() {
 	case "nest":
 		tr = ason.NewTransformer(nestProto{})
 	case "rewrite":
-		tr = ason.NewKeyProbeTransformer(ason.KeyProbeOptions{Keys: map[string]int{"model": 4096},
+		tr = ason.NewKeyProbeTransformer(ason.KeyProbeOptions{Keys: map[string]int{"owner": 4096},
 			OnKey: func(t *ason.Transformer, key string, raw []byte) ([]byte, bool) {
 				if i := bytes.IndexByte(raw, '/'); i >= 0 {
 					return append([]byte(`"`), raw[i+1:]...), true

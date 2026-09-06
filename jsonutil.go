@@ -10,7 +10,7 @@ import (
 const hexDigits = "0123456789abcdef"
 
 // AppendJSONString 按 encoding/json 的规则（含 HTML 安全转义 < > &）编码字符串。
-// 与官方 json.Marshal 的输出逐字节一致，差分比对时不产生噪音。
+// 与 encoding/json 的 Marshal 输出逐字节一致。
 func AppendJSONString(dst []byte, s string) []byte {
 	dst = append(dst, '"')
 	start := 0

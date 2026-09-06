@@ -100,7 +100,7 @@ type Transformer struct {
 	pendSet bool
 
 	// 原样保留派发帧里 key 周围的空白：kvRaw = [空白]"key"[空白]:[空白]，elemWs = 元素前空白。
-	// 透传类协议靠它做到"没动的字节一个不改"，与 sjson 的原地修改效果一致。
+	// 透传类协议靠它做到"没动的字节一个不改"，效果与 sjson 的原地修改一致。
 	kvRaw       []byte
 	wsRaw       []byte
 	elemWs      []byte

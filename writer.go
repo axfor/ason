@@ -155,7 +155,7 @@ func (w *Writer) PushObj(key string) { w.push(key, nil, false) }
 func (w *Writer) PushArr(key string) { w.push(key, nil, true) }
 func (w *Writer) Pop()               { w.pop(nil) }
 
-// Open 强制打开当前层（用于必须物化空容器的场合，如官方输出 "content":[]）。
+// Open 强制打开当前层（用于必须物化空容器的场合，如输出里一定要有 "content":[]）。
 func (w *Writer) Open() { w.ensureOpen(w.Level()) }
 
 // Raw 原样追加字节。调用方负责它出现在语法上合法的位置。
