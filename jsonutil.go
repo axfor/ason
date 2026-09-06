@@ -9,8 +9,8 @@ import (
 
 const hexDigits = "0123456789abcdef"
 
-// AppendJSONString 按 encoding/json 的规则（含 HTML 安全转义 < > &）编码字符串。
-// 与 encoding/json 的 Marshal 输出逐字节一致。
+// AppendJSONString encodes a string by the rules of encoding/json (including the HTML-safe escapes of < > &).
+// Byte-identical to the Marshal output of encoding/json.
 func AppendJSONString(dst []byte, s string) []byte {
 	dst = append(dst, '"')
 	start := 0
@@ -32,7 +32,7 @@ func AppendJSONString(dst []byte, s string) []byte {
 			case '\t':
 				dst = append(dst, '\\', 't')
 			default:
-				// 控制字符与 < > & 走 \u00XX
+				// control characters and < > & become \u00XX
 				dst = append(dst, '\\', 'u', '0', '0', hexDigits[b>>4], hexDigits[b&0xF])
 			}
 			i++
@@ -60,7 +60,7 @@ func AppendJSONString(dst []byte, s string) []byte {
 	return append(dst, '"')
 }
 
-// safeSet 与 encoding/json 的 htmlSafeSet 一致：这些 ASCII 字节原样输出。
+// safeSet matches the htmlSafeSet of encoding/json: these ASCII bytes are written as is.
 var safeSet = func() [utf8.RuneSelf]bool {
 	var s [utf8.RuneSelf]bool
 	for b := 0x20; b < utf8.RuneSelf; b++ {
@@ -76,8 +76,8 @@ var safeSet = func() [utf8.RuneSelf]bool {
 
 func appendInt(dst []byte, n int) []byte { return strconv.AppendInt(dst, int64(n), 10) }
 
-// JSONUnquote 解码一个 JSON 字符串字面量（含两端引号）。
-// 非法输入返回 ok=false。
+// JSONUnquote decodes a JSON string literal (quotes included).
+// Invalid input returns ok=false.
 func JSONUnquote(raw []byte) (string, bool) {
 	if len(raw) < 2 || raw[0] != '"' || raw[len(raw)-1] != '"' {
 		return "", false
@@ -85,9 +85,9 @@ func JSONUnquote(raw []byte) (string, bool) {
 	return unescapeInner(raw[1 : len(raw)-1])
 }
 
-// unescapeInner 解码不含引号的字符串内容。
+// unescapeInner decodes string content without the quotes.
 func unescapeInner(b []byte) (string, bool) {
-	// 快路径：无转义
+	// fast path: no escapes
 	hasEsc := false
 	for _, c := range b {
 		if c == '\\' {
@@ -131,7 +131,7 @@ func unescapeInner(b []byte) (string, bool) {
 				return "", false
 			}
 			i += 4
-			if r >= 0xD800 && r < 0xDC00 { // 高代理，尝试配对
+			if r >= 0xD800 && r < 0xDC00 { // high surrogate, try to pair it
 				if i+6 < len(b) && b[i+1] == '\\' && b[i+2] == 'u' {
 					if r2, ok2 := hex4(b[i+3 : i+7]); ok2 && r2 >= 0xDC00 && r2 < 0xE000 {
 						r = 0x10000 + (r-0xD800)<<10 + (r2 - 0xDC00)
@@ -171,10 +171,10 @@ func hex4(b []byte) (rune, bool) {
 	return r, true
 }
 
-// UnescapePrefix 解码字符串前缀，同时记录每个解码后字节对应的原始偏移，
-// 用于"解码后判定、原始字节续传"的场景（如 data: URL 头）。
-// 末尾不完整的转义序列不解码；rawOff 末尾多一个哨兵，指向解码停止处的原始偏移，
-// 因此 rawOff[len(dec)] 之后的原始字节可以原样续传。
+// UnescapePrefix decodes a string prefix while recording the raw offset of every decoded byte,
+// for "decide on the decoded bytes, resume from the raw bytes" situations (a data: URL header, say).
+// An incomplete escape sequence at the end is not decoded; rawOff carries one extra sentinel pointing at the raw offset where
+// decoding stopped, so the raw bytes from rawOff[len(dec)] on can be forwarded unchanged.
 func UnescapePrefix(b []byte) (dec []byte, rawOff []int) {
 	dec = make([]byte, 0, len(b))
 	rawOff = make([]int, 0, len(b)+1)
@@ -188,7 +188,7 @@ func UnescapePrefix(b []byte) (dec []byte, rawOff []int) {
 			continue
 		}
 		if i+1 >= len(b) {
-			break // 不完整的转义：停在这里
+			break // incomplete escape: stop here
 		}
 		start := i
 		var r rune
@@ -208,7 +208,7 @@ func UnescapePrefix(b []byte) (dec []byte, rawOff []int) {
 			r = '\t'
 		case 'u':
 			if i+6 > len(b) {
-				i = len(b) + 1 // 标记：不完整
+				i = len(b) + 1 // marker: incomplete
 				break
 			}
 			v, ok := hex4(b[i+2 : i+6])
@@ -232,17 +232,17 @@ func UnescapePrefix(b []byte) (dec []byte, rawOff []int) {
 		}
 		i = start + consumed
 	}
-	rawOff = append(rawOff, i) // 哨兵
+	rawOff = append(rawOff, i) // sentinel
 	return dec, rawOff
 }
 
-// IsZeroNum 判断数字字面量是否为零值（0 / 0.0 / 0e0 …）——复刻 omitempty 语义。
+// IsZeroNum reports whether a number literal is zero (0 / 0.0 / 0e0 ...), reproducing omitempty semantics.
 func IsZeroNum(s []byte) bool {
 	f, err := strconv.ParseFloat(string(s), 64)
 	return err == nil && f == 0
 }
 
-// IsIntLiteral 判断是否是 encoding/json 能解进 int 的字面量。
+// IsIntLiteral reports whether the literal is one encoding/json can decode into an int.
 func IsIntLiteral(s []byte) bool {
 	_, err := strconv.ParseInt(string(s), 10, 64)
 	return err == nil
@@ -263,25 +263,25 @@ func lower(s string) string {
 	return string(b)
 }
 
-// ---- 标量字面量的严格校验（与 encoding/json 一致：null/true/false 精确匹配，数字按 JSON 文法）----
+// ---- strict validation of scalar literals (as encoding/json: null/true/false matched exactly, numbers by the JSON grammar) ----
 
-// numState 是数字文法的 DFA 状态。
+// numState is a state of the number grammar DFA.
 type numState uint8
 
 const (
-	nsStart   numState = iota // 期待 '-' 或首位数字
-	nsNeg                     // 已读 '-'
-	nsZero                    // 整数部分是单个 0（可接受）
-	nsInt                     // 整数部分非零（可接受）
-	nsDot                     // 已读 '.'
-	nsFrac                    // 小数部分（可接受）
-	nsExp                     // 已读 e/E
-	nsExpSign                 // 已读 e 后的符号
-	nsExpDig                  // 指数数字（可接受）
+	nsStart   numState = iota // expecting '-' or the first digit
+	nsNeg                     // '-' read
+	nsZero                    // the integer part is a single 0 (accepting)
+	nsInt                     // non-zero integer part (accepting)
+	nsDot                     // '.' read
+	nsFrac                    // fraction digits (accepting)
+	nsExp                     // e/E read
+	nsExpSign                 // sign after e read
+	nsExpDig                  // exponent digits (accepting)
 	nsBad
 )
 
-// 数字 DFA 表驱动：字节类 × 状态 → 新状态（nsBad 为非法）。
+// Table-driven number DFA: byte class × state → new state (nsBad = invalid).
 type numClass uint8
 
 const (
@@ -344,12 +344,12 @@ func numAccept(s numState) bool {
 	return s == nsZero || s == nsInt || s == nsFrac || s == nsExpDig
 }
 
-// litState 跟踪一个正在扫描的标量字面量。
+// litState tracks a scalar literal being scanned.
 type litState struct {
 	kind  ValueKind
-	first byte     // 首字节（区分 true / false）
-	n     int      // 已匹配的 null/true/false 字节数
-	num   numState // 数字 DFA
+	first byte     // first byte (tells true from false)
+	n     int      // bytes of null/true/false matched so far
+	num   numState // number DFA
 }
 
 func litKindOf(c byte) (ValueKind, bool) {
@@ -364,7 +364,7 @@ func litKindOf(c byte) (ValueKind, bool) {
 	return 0, false
 }
 
-// start 用首字节初始化；首字节非法返回 false。
+// start initializes with the first byte; returns false when it is invalid.
 func (l *litState) start(c byte) bool {
 	k, ok := litKindOf(c)
 	if !ok {
@@ -384,7 +384,7 @@ func (l *litState) word(c byte) string {
 	return "false"
 }
 
-// step 喂一个字节；违反文法返回 false。
+// step feeds one byte; returns false on a grammar violation.
 func (l *litState) step(c byte) bool {
 	if l.kind == KindNumber {
 		l.num = numStep(l.num, c)
@@ -402,7 +402,7 @@ func (l *litState) step(c byte) bool {
 	return true
 }
 
-// done 报告字面量在此结束是否完整。
+// done reports whether the literal is complete if it ends here.
 func (l *litState) done() bool {
 	if l.kind == KindNumber {
 		return numAccept(l.num)
@@ -410,9 +410,9 @@ func (l *litState) done() bool {
 	return l.n == len(l.word(l.first))
 }
 
-// scanStringBody 从 p[i:] 起跳过字符串里的普通字节，返回第一个需要处理的字节下标
-// （`"`、`\\` 或控制字符 < 0x20），没有则返回 len(p)。
-// 8 字节一组做 SWAR 判定：字符串/base64 是大请求里的主体，这里是扫描器最热的路径。
+// scanStringBody skips the plain bytes of a string starting at p[i:] and returns the index of the first byte that needs
+// handling (`"`, `\\` or a control character < 0x20), or len(p) when there is none.
+// SWAR over 8 bytes at a time: strings / base64 make up the bulk of large requests, so this is the scanner's hottest path.
 func scanStringBody(p []byte, i int) int {
 	const lo = 0x0101010101010101
 	const hi = 0x8080808080808080
@@ -425,7 +425,7 @@ func scanStringBody(p []byte, i int) int {
 		xb := x ^ bb
 		m := ((xq - lo) & ^xq & hi) | ((xb - lo) & ^xb & hi) | ((x - sp) & ^x & hi)
 		if m != 0 {
-			// 借位只向高字节传播，最低置位字节一定是真命中
+			// the borrow only propagates upward, so the lowest set byte is always a real hit
 			return i + bits.TrailingZeros64(m)>>3
 		}
 		i += 8
@@ -440,7 +440,7 @@ func scanStringBody(p []byte, i int) int {
 	return i
 }
 
-// scanStringBodyUTF8 与 scanStringBody 相同，但也在第一个 ≥ 0x80 的字节处停下（开启 UTF-8 校验时使用）。
+// scanStringBodyUTF8 is scanStringBody that also stops at the first byte >= 0x80 (used when UTF-8 validation is on).
 func scanStringBodyUTF8(p []byte, i int) int {
 	const lo = 0x0101010101010101
 	const hi = 0x8080808080808080
@@ -467,7 +467,7 @@ func scanStringBodyUTF8(p []byte, i int) int {
 	return i
 }
 
-// utf8First 按首字节给出序列长度（低 3 位，0 = 非法首字节）与第二个字节的允许范围编号（高位，见 utf8Accept）。
+// utf8First gives, per first byte, the sequence length (low 3 bits, 0 = invalid first byte) and the accepted range of the second byte (high bits, see utf8Accept).
 var utf8First = func() (t [256]uint8) {
 	for c := 0xC2; c <= 0xDF; c++ {
 		t[c] = 2
@@ -485,11 +485,11 @@ var utf8First = func() (t [256]uint8) {
 	return
 }()
 
-// utf8Accept 第二个字节的允许范围：0 = 一般，1 = E0 之后（排除过长），2 = ED 之后（排除代理对），
-// 3 = F0 之后（排除过长），4 = F4 之后（≤ U+10FFFF）。
+// utf8Accept is the accepted range of the second byte: 0 = general, 1 = after E0 (no overlong), 2 = after ED (no surrogates),
+// 3 = after F0 (no overlong), 4 = after F4 (<= U+10FFFF).
 var utf8Accept = [5]struct{ lo, hi byte }{{0x80, 0xBF}, {0xA0, 0xBF}, {0x80, 0x9F}, {0x90, 0xBF}, {0x80, 0x8F}}
 
-// utf8State 是 RFC 3629 的 UTF-8 序列校验状态：need 是还差几个续字节，lo/hi 是下一个字节允许的范围。
+// utf8State is the RFC 3629 UTF-8 sequence validation state: need is the number of continuation bytes still expected, lo/hi the accepted range of the next byte.
 type utf8State struct {
 	need   uint8
 	lo, hi byte
@@ -507,7 +507,7 @@ func (u *utf8State) step(c byte) bool {
 		case c >= 0xE1 && c <= 0xEC, c == 0xEE, c == 0xEF:
 			u.need, u.lo, u.hi = 2, 0x80, 0xBF
 		case c == 0xED:
-			u.need, u.lo, u.hi = 2, 0x80, 0x9F // 排除代理对
+			u.need, u.lo, u.hi = 2, 0x80, 0x9F // no surrogates
 		case c == 0xF0:
 			u.need, u.lo, u.hi = 3, 0x90, 0xBF
 		case c >= 0xF1 && c <= 0xF3:
@@ -515,7 +515,7 @@ func (u *utf8State) step(c byte) bool {
 		case c == 0xF4:
 			u.need, u.lo, u.hi = 3, 0x80, 0x8F // ≤ U+10FFFF
 		default:
-			return false // C0 C1 F5..FF 与孤立的续字节
+			return false // C0 C1 F5..FF and stray continuation bytes
 		}
 		return true
 	}
@@ -527,14 +527,14 @@ func (u *utf8State) step(c byte) bool {
 	return true
 }
 
-// jsonSpace 标出 JSON 文法允许的 4 种空白。
+// jsonSpace marks the 4 whitespace bytes the JSON grammar allows.
 var jsonSpace = [256]bool{' ': true, '\t': true, '\n': true, '\r': true}
 
 func isHexByte(c byte) bool {
 	return c >= '0' && c <= '9' || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F'
 }
 
-// escapeClass 报告反斜杠后的字节：0 非法，1 单字符转义，2 \u（后接 4 位 hex）。
+// escapeClass classifies the byte after a backslash: 0 invalid, 1 single-character escape, 2 \u (followed by 4 hex digits).
 func escapeClass(c byte) uint8 {
 	switch c {
 	case '"', '\\', '/', 'b', 'f', 'n', 'r', 't':

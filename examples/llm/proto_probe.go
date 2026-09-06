@@ -6,7 +6,7 @@ import (
 	"github.com/axfor/ason"
 )
 
-// KeyProbeOptions 在 ason.KeyProbeOptions 之上加上 Prelude 报告：把 ModelKey / StreamKey 的值报告给集成层。
+// KeyProbeOptions adds Prelude reporting on top of ason.KeyProbeOptions: the values of ModelKey / StreamKey are reported to the integration layer.
 type KeyProbeOptions struct {
 	Keys      map[string]int
 	OnKey     func(t *Transformer, key string, raw []byte) (replacement []byte, replace bool)
@@ -21,7 +21,7 @@ type preludeProbe struct {
 	pre Prelude
 }
 
-// NewKeyProbe 构造带 Prelude 的顶层 key 探针（model-router / ai-statistics 这类插件用）。
+// NewKeyProbe builds a top-level key probe with a Prelude (used by plugins such as model-router / ai-statistics).
 func NewKeyProbe(opt KeyProbeOptions) *Transformer {
 	p := &preludeProbe{opt: opt}
 	p.KeyProbe = ason.NewKeyProbe(ason.KeyProbeOptions{Keys: opt.Keys, OnKey: opt.OnKey, Observe: opt.Observe})

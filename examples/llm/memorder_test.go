@@ -6,11 +6,11 @@ import (
 	"testing"
 )
 
-// 大 content 且 role 迟到——最坏情况：暂存到上限才降级
+// Large content with a late role: the worst case, held up to the cap before degrading
 func TestMemWithLateRole(t *testing.T) {
 	for _, mb := range []int{1, 4, 16} {
 		big := strings.Repeat("y", mb<<20)
-		// role 排在 content 之后，强制走有界暂存路径
+		// role after content forces the bounded hold path
 		in := `{"messages":[{"content":"` + big + `","role":"user"}],"model":"m"}`
 		tr := New()
 		maxHeld, total := 0, 0
@@ -27,10 +27,10 @@ func TestMemWithLateRole(t *testing.T) {
 			}
 		}
 		total += len(tr.Finish())
-		fmt.Printf("  role迟到 输入%2dMB -> 输出 %.2fMB | 单次最大持有 %d 字节 (上限 %d)\n",
+		fmt.Printf("  late role input %2dMB -> output %.2fMB | max held at once %d bytes (cap %d)\n",
 			mb, float64(total)/1048576, maxHeld, roleWaitCap)
 		if maxHeld > roleWaitCap+8192 {
-			t.Errorf("%dMB: 持有 %d 超过暂存上限，未有界", mb, maxHeld)
+			t.Errorf("%dMB: held %d above the hold cap, not bounded", mb, maxHeld)
 		}
 	}
 }

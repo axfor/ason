@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// feedAll 分块喂入并收尾，返回 (输出, 是否放行, 不支持原因)。
+// feedAll feeds the input in chunks and finishes; returns (output, passed, bail reason).
 func feedAll(tr *Transformer, in string, chunk int) (string, bool, string) {
 	var sb strings.Builder
 	for i := 0; i < len(in); i += chunk {
@@ -24,43 +24,43 @@ func feedAll(tr *Transformer, in string, chunk int) (string, bool, string) {
 	return sb.String(), true, ""
 }
 
-// 扫描器对标量字面量 / 字符串转义 / 空白按 JSON 文法严格校验：
-// encoding/json 会拒绝的输入，流式必须判定不支持（回落后由官方路径返回 400），
-// 无论它落在派发帧、Skip 区域还是 Pass 区域。
+// The scanner validates scalar literals / string escapes / whitespace strictly by the JSON grammar:
+// input encoding/json rejects must be a bail in streaming (after the fallback the buffered path answers 400),
+// whether it lands in a dispatch frame, a Skip region or a Pass region.
 func TestStrictLiterals(t *testing.T) {
 	bad := map[string]string{
-		"nul 顶层":      `{"model":"m","stream":nul,"messages":[{"role":"user","content":"U"}]}`,
-		"tru 顶层":      `{"model":"m","stream":tru,"messages":[{"role":"user","content":"U"}]}`,
-		"truee":       `{"model":"m","stream":truee,"messages":[{"role":"user","content":"U"}]}`,
-		"前导0":         `{"model":"m","max_tokens":01,"messages":[{"role":"user","content":"U"}]}`,
-		"1.":          `{"model":"m","temperature":1.,"messages":[{"role":"user","content":"U"}]}`,
-		"1e":          `{"model":"m","temperature":1e,"messages":[{"role":"user","content":"U"}]}`,
-		"1e+":         `{"model":"m","temperature":1e+,"messages":[{"role":"user","content":"U"}]}`,
-		"-":           `{"model":"m","temperature":-,"messages":[{"role":"user","content":"U"}]}`,
-		"+1":          `{"model":"m","temperature":+1,"messages":[{"role":"user","content":"U"}]}`,
-		".5":          `{"model":"m","temperature":.5,"messages":[{"role":"user","content":"U"}]}`,
-		"NaN":         `{"model":"m","temperature":NaN,"messages":[{"role":"user","content":"U"}]}`,
-		"Skip区域里":     `{"model":"m","zzz":{"a":[nul]},"messages":[{"role":"user","content":"U"}]}`,
-		"Skip区域里数字":   `{"model":"m","zzz":{"a":1.e5},"messages":[{"role":"user","content":"U"}]}`,
-		"Pass区域里":     `{"model":"m","messages":[{"role":"user","content":"U","zzz":[+1]}]}`,
-		"Pass区域里字面量":  `{"model":"m","messages":[{"role":"user","content":"U","zzz":{"a":fals}}]}`,
-		"末尾字面量":       `{"model":"m","messages":[{"role":"user","content":"U"}],"zzz":tr}`,
-		"非法转义":        `{"model":"m","messages":[{"role":"user","content":"a\x"}]}`,
-		"u转义不足":       `{"model":"m","messages":[{"role":"user","content":"a\u12G4"}]}`,
-		"u转义被引号截断":    `{"model":"m","messages":[{"role":"user","content":"a\u123"}]}`,
-		"控制字符":        "{\"model\":\"m\",\"messages\":[{\"role\":\"user\",\"content\":\"a\x01b\"}]}",
-		"控制字符 Pass区域": "{\"model\":\"m\",\"messages\":[{\"role\":\"user\",\"content\":\"U\",\"zzz\":\"a\nb\"}]}",
-		"key非法转义":     `{"model":"m","messages":[{"role":"user","content":"U","z\q":1}]}`,
-		"key控制字符":     "{\"model\":\"m\",\"messages\":[{\"role\":\"user\",\"content\":\"U\",\"z\x02\":1}]}",
-		"非JSON空白 VT":  "{\"model\":\"m\",\x0b\"messages\":[{\"role\":\"user\",\"content\":\"U\"}]}",
-		"非JSON空白 FF":  "{\"model\":\"m\",\"messages\":[\x0c{\"role\":\"user\",\"content\":\"U\"}]}",
-		"非JSON空白 NUL": "{\"model\":\"m\",\"messages\":[{\"role\":\"user\",\"content\":\"U\"}]\x00}",
+		"nul at top level":                   `{"model":"m","stream":nul,"messages":[{"role":"user","content":"U"}]}`,
+		"tru at top level":                   `{"model":"m","stream":tru,"messages":[{"role":"user","content":"U"}]}`,
+		"truee":                              `{"model":"m","stream":truee,"messages":[{"role":"user","content":"U"}]}`,
+		"leading zero":                       `{"model":"m","max_tokens":01,"messages":[{"role":"user","content":"U"}]}`,
+		"1.":                                 `{"model":"m","temperature":1.,"messages":[{"role":"user","content":"U"}]}`,
+		"1e":                                 `{"model":"m","temperature":1e,"messages":[{"role":"user","content":"U"}]}`,
+		"1e+":                                `{"model":"m","temperature":1e+,"messages":[{"role":"user","content":"U"}]}`,
+		"-":                                  `{"model":"m","temperature":-,"messages":[{"role":"user","content":"U"}]}`,
+		"+1":                                 `{"model":"m","temperature":+1,"messages":[{"role":"user","content":"U"}]}`,
+		".5":                                 `{"model":"m","temperature":.5,"messages":[{"role":"user","content":"U"}]}`,
+		"NaN":                                `{"model":"m","temperature":NaN,"messages":[{"role":"user","content":"U"}]}`,
+		"inside a Skip region":               `{"model":"m","zzz":{"a":[nul]},"messages":[{"role":"user","content":"U"}]}`,
+		"number inside a Skip region":        `{"model":"m","zzz":{"a":1.e5},"messages":[{"role":"user","content":"U"}]}`,
+		"inside a Pass region":               `{"model":"m","messages":[{"role":"user","content":"U","zzz":[+1]}]}`,
+		"literal inside a Pass region":       `{"model":"m","messages":[{"role":"user","content":"U","zzz":{"a":fals}}]}`,
+		"literal at the end":                 `{"model":"m","messages":[{"role":"user","content":"U"}],"zzz":tr}`,
+		"invalid escape":                     `{"model":"m","messages":[{"role":"user","content":"a\x"}]}`,
+		"short u escape":                     `{"model":"m","messages":[{"role":"user","content":"a\u12G4"}]}`,
+		"u escape cut by a quote":            `{"model":"m","messages":[{"role":"user","content":"a\u123"}]}`,
+		"control character":                  "{\"model\":\"m\",\"messages\":[{\"role\":\"user\",\"content\":\"a\x01b\"}]}",
+		"control character in a Pass region": "{\"model\":\"m\",\"messages\":[{\"role\":\"user\",\"content\":\"U\",\"zzz\":\"a\nb\"}]}",
+		"invalid key escape":                 `{"model":"m","messages":[{"role":"user","content":"U","z\q":1}]}`,
+		"control character in a key":         "{\"model\":\"m\",\"messages\":[{\"role\":\"user\",\"content\":\"U\",\"z\x02\":1}]}",
+		"non-JSON whitespace VT":             "{\"model\":\"m\",\x0b\"messages\":[{\"role\":\"user\",\"content\":\"U\"}]}",
+		"non-JSON whitespace FF":             "{\"model\":\"m\",\"messages\":[\x0c{\"role\":\"user\",\"content\":\"U\"}]}",
+		"non-JSON whitespace NUL":            "{\"model\":\"m\",\"messages\":[{\"role\":\"user\",\"content\":\"U\"}]\x00}",
 	}
 	good := map[string]string{
-		"数字边界":   `{"model":"m","temperature":-0,"top_p":0.5E+1,"max_tokens":100,"zzz":{"a":-0.0e-0,"b":[1E2,0,-1,12.5e-7]},"messages":[{"role":"user","content":"U"}]}`,
-		"转义边界":   `{"model":"m","messages":[{"role":"user","content":"\u00e9\/\"\\\ud83d\ude00\b\f\n\r\t"}]}`,
-		"key转义":  `{"model":"m","messages":[{"role":"user","content":"U","z\u0041\"":1}]}`,
-		"JSON空白": "{\t\"model\"\r:\n\"m\" ,\"messages\":[ {\"role\":\"user\",\"content\":\"U\"} ]\n}\n",
+		"number edge cases": `{"model":"m","temperature":-0,"top_p":0.5E+1,"max_tokens":100,"zzz":{"a":-0.0e-0,"b":[1E2,0,-1,12.5e-7]},"messages":[{"role":"user","content":"U"}]}`,
+		"escape edge cases": `{"model":"m","messages":[{"role":"user","content":"\u00e9\/\"\\\ud83d\ude00\b\f\n\r\t"}]}`,
+		"key escape":        `{"model":"m","messages":[{"role":"user","content":"U","z\u0041\"":1}]}`,
+		"JSON whitespace":   "{\t\"model\"\r:\n\"m\" ,\"messages\":[ {\"role\":\"user\",\"content\":\"U\"} ]\n}\n",
 	}
 	mk := map[string]func() *Transformer{
 		"passthrough": func() *Transformer { return NewTransformer(BaseProtocol{}) },
@@ -69,33 +69,33 @@ func TestStrictLiterals(t *testing.T) {
 	for pn, newT := range mk {
 		for name, in := range bad {
 			if err := json.Unmarshal([]byte(in), new(map[string]any)); err == nil {
-				t.Fatalf("用例 %q 本应是非法 JSON", name)
+				t.Fatalf("case %q should be invalid JSON", name)
 			}
 			for _, cs := range []int{1, 2, 3, 7, 4096} {
 				if out, ok, _ := feedAll(newT(), in, cs); ok {
-					t.Errorf("[%s] %s chunk=%d: 非法输入被放行: %s", pn, name, cs, out)
+					t.Errorf("[%s] %s chunk=%d: invalid input was passed: %s", pn, name, cs, out)
 				}
 			}
 		}
 		for name, in := range good {
 			if err := json.Unmarshal([]byte(in), new(map[string]any)); err != nil {
-				t.Fatalf("用例 %q 本应是合法 JSON: %v", name, err)
+				t.Fatalf("case %q should be valid JSON: %v", name, err)
 			}
 			for _, cs := range []int{1, 2, 3, 7, 4096} {
 				out, ok, why := feedAll(newT(), in, cs)
 				if !ok {
-					t.Errorf("[%s] %s chunk=%d: 合法输入被拒: %s", pn, name, cs, why)
+					t.Errorf("[%s] %s chunk=%d: valid input rejected: %s", pn, name, cs, why)
 					continue
 				}
 				if !json.Valid([]byte(out)) {
-					t.Errorf("[%s] %s chunk=%d: 输出不是合法 JSON: %s", pn, name, cs, out)
+					t.Errorf("[%s] %s chunk=%d: output is not valid JSON: %s", pn, name, cs, out)
 				}
 			}
 		}
 	}
 }
 
-// 标量子类型：null / bool / number 在 OnStart 里可区分，协议据此做"null 视为缺失、其它类型错误回落"。
+// Scalar subkinds: null / bool / number can be told apart in OnStart, so a protocol can treat null as absent and other type mismatches as a fallback.
 func TestScalarKinds(t *testing.T) {
 	cases := []struct {
 		in   string
@@ -129,7 +129,7 @@ func (p *kindProbe) OnStart(t *Transformer, kind ValueKind) Action {
 	return Pass()
 }
 
-// captureAllProto：顶层每个值都 Capture 后原样写回——让字面量校验也覆盖 Capture 区域。
+// captureAllProto Captures every top-level value and writes it back unchanged, so literal validation also covers Capture regions.
 type captureAllProto struct{ BaseProtocol }
 
 func (captureAllProto) OnKey(t *Transformer) Action {

@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-// 分块尺寸不变性：同一输入，任何分块方式的输出都相同。
+// Chunk-size invariance: the same input yields the same output whatever the chunking.
 func TestChunkSizeInvariance(t *testing.T) {
 	r := rand.New(rand.NewSource(3))
 	gen := func() string {
@@ -54,17 +54,17 @@ func TestChunkSizeInvariance(t *testing.T) {
 			for _, cs := range []int{1, 2, 3, 5, 7, 11, 64, 1000} {
 				got, ok, why := feedAll(m(), in, cs)
 				if !ok || got != ref {
-					t.Fatalf("chunk=%d 输出与整体喂入不同 (ok=%v %s)\n in  %q\n ref %q\n got %q", cs, ok, why, in, ref, got)
+					t.Fatalf("chunk=%d output differs from feeding everything at once (ok=%v %s)\n in  %q\n ref %q\n got %q", cs, ok, why, in, ref, got)
 				}
 			}
 			if !json.Valid([]byte(ref)) {
-				t.Fatalf("输出不是合法 JSON: %q", ref)
+				t.Fatalf("output is not valid JSON: %q", ref)
 			}
 		}
 	}
 }
 
-// 垃圾输入：随机字节、随机截断、随机篡改，任何协议都不能 panic，只能"输出"或"判定不支持"。
+// Garbage input: random bytes, random truncation, random tampering; no protocol may panic, it can only produce output or bail.
 func TestGarbageNeverPanics(t *testing.T) {
 	r := rand.New(rand.NewSource(9))
 	base := `{"model":"m","messages":[{"role":"user","content":"hi\né"},{"role":"assistant","content":[{"type":"text","text":"x"}]}],"tools":[{"f":{"p":{"a":[1,2.5,null]}}}],"stream":true}`
@@ -78,14 +78,14 @@ func TestGarbageNeverPanics(t *testing.T) {
 	for i := 0; i < 3000; i++ {
 		b := []byte(base)
 		switch r.Intn(4) {
-		case 0: // 截断
+		case 0: // truncate
 			b = b[:r.Intn(len(b))]
-		case 1: // 随机改一个字节
+		case 1: // change one random byte
 			b[r.Intn(len(b))] = byte(r.Intn(256))
-		case 2: // 插入垃圾
+		case 2: // insert garbage
 			p := r.Intn(len(b))
 			b = append(b[:p:p], append([]byte{byte(r.Intn(256)), byte(r.Intn(256))}, b[p:]...)...)
-		case 3: // 纯随机
+		case 3: // pure random
 			b = make([]byte, r.Intn(64))
 			r.Read(b)
 		}
@@ -93,7 +93,7 @@ func TestGarbageNeverPanics(t *testing.T) {
 			func() {
 				defer func() {
 					if e := recover(); e != nil {
-						t.Fatalf("panic: %v\n输入 %q", e, b)
+						t.Fatalf("panic: %v\ninput %q", e, b)
 					}
 				}()
 				tr := m()
@@ -112,7 +112,7 @@ func TestGarbageNeverPanics(t *testing.T) {
 	}
 }
 
-// 深层嵌套与超长字符串：常数状态，不随输入增长。
+// Deep nesting and very long strings: constant state, nothing grows with the input.
 func TestDeepAndLong(t *testing.T) {
 	deep := strings.Repeat(`{"a":[`, 2000) + `1` + strings.Repeat(`]}`, 2000)
 	in := `{"d":` + deep + `,"s":"` + strings.Repeat("abcdefgh\\n", 200000) + `"}`

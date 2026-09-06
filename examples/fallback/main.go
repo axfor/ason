@@ -1,5 +1,5 @@
-// 提交点与回落：输出在 64KB 提交点之前不下发；协议在此之前判定不支持时，调用方还持有全部原始字节，
-// 可以换一条路（这里演示：原样输出）。提交点之后判定不支持则只能失败。
+// Commit point and fallback: nothing is released before the 64KB commit point; if the protocol bails before it, the caller still
+// holds every raw byte and can take another route (here: write them out unchanged). A bail after the commit point can only fail.
 //
 //	echo '{"a":1,"b":tru}' | go run ./examples/fallback
 package main
@@ -14,10 +14,10 @@ import (
 )
 
 func main() {
-	chunk := flag.Int("chunk", 5, "每次喂给转换器的字节数")
+	chunk := flag.Int("chunk", 5, "bytes fed to the transformer per call")
 	flag.Parse()
 	tr := ason.NewTransformer(ason.BaseProtocol{})
-	var held []byte // 提交点之前，调用方自己留着原始字节
+	var held []byte // before the commit point the caller keeps the raw bytes itself
 	in := io.Reader(os.Stdin)
 	if fi, err := os.Stdin.Stat(); err == nil && fi.Mode()&os.ModeCharDevice != 0 {
 		in = readerOf(`{"a":1,"b":tru}`)
@@ -41,7 +41,7 @@ func main() {
 				io.Copy(os.Stdout, in)
 				return
 			}
-			if out := tr.Out(); len(out) > 0 { // 越过提交点后才会有输出
+			if out := tr.Out(); len(out) > 0 { // output only appears past the commit point
 				held = nil
 				os.Stdout.Write(out)
 			}

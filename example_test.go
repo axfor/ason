@@ -8,7 +8,7 @@ import (
 	"github.com/axfor/ason"
 )
 
-// feed 分块喂入并收尾，返回输出与不支持的原因。
+// feed feeds the input in chunks and finishes; returns the output and the bail reason.
 func feed(tr *ason.Transformer, in string, chunk int) (string, string) {
 	var out bytes.Buffer
 	for i := 0; i < len(in); i += chunk {
@@ -26,7 +26,7 @@ func feed(tr *ason.Transformer, in string, chunk int) (string, string) {
 	return out.String(), ""
 }
 
-// 透传：BaseProtocol 对一切返回 Pass，没动的字节一个不改（空白、顺序、转义都保留）。
+// Passthrough: BaseProtocol returns Pass for everything; untouched bytes stay identical (whitespace, order and escapes preserved).
 func Example_passthrough() {
 	in := "{\n  \"id\" : 1 ,\n  \"items\" : [ { \"k\" : \"v\" } ]\n}\n"
 	out, _ := feed(ason.NewTransformer(ason.BaseProtocol{}), in, 3)
@@ -34,7 +34,7 @@ func Example_passthrough() {
 	// Output: true
 }
 
-// 改名：OnKey 返回 Pass().As(新名)。只改顶层，嵌套里的同名 key 不动。
+// Rename: OnKey returns Pass().As(newName). Only the top level is renamed; a nested key with the same name is untouched.
 type renameProto struct{ ason.BaseProtocol }
 
 func (renameProto) OnKey(t *ason.Transformer) ason.Action {
@@ -50,7 +50,7 @@ func Example_rename() {
 	// Output: {"id":"m","total":10,"n":{"count":1}}
 }
 
-// 原位改写：KeyProbe 捕获顶层 key，回调里决定替换值；其余字节直通，捕获到的原始值可随后读取。
+// In-place rewrite: KeyProbe captures top-level keys and the callback decides the replacement; every other byte passes through, and the captured raw values can be read afterwards.
 func Example_rewrite() {
 	tr := ason.NewKeyProbeTransformer(ason.KeyProbeOptions{
 		Keys: map[string]int{"owner": 4096},
@@ -69,7 +69,7 @@ func Example_rewrite() {
 	// "team/42"
 }
 
-// 脱敏：Prefix(n) 只攒字符串的前 n 字节，写出前缀后 Skip 掉剩余部分——长字符串不进内存。
+// Redaction: Prefix(n) collects only the first n bytes of the string, writes the prefix and Skips the rest; a long string never enters memory.
 type redactProto struct{ ason.BaseProtocol }
 
 func (redactProto) OnKey(t *ason.Transformer) ason.Action {
@@ -91,7 +91,7 @@ func Example_redact() {
 	// Output: {"api_key":"sk-1***","user":"u"}
 }
 
-// 重组：一个输入容器落到多层嵌套输出——items 变成 data.items。
+// Restructuring: one input container lands in nested output levels; items becomes data.items.
 type nestProto struct{ ason.BaseProtocol }
 
 func (nestProto) OnKey(t *ason.Transformer) ason.Action {
@@ -102,17 +102,17 @@ func (nestProto) OnKey(t *ason.Transformer) ason.Action {
 }
 func (nestProto) OnStart(t *ason.Transformer, kind ason.ValueKind) ason.Action {
 	if kind != ason.KindArray {
-		return ason.Bail("items 不是数组")
+		return ason.Bail("items is not an array")
 	}
 	w := t.W()
 	w.PushObj("data")
 	w.PushArr("items")
-	return ason.Enter().Flat() // 元素直接落进自建的 data.items
+	return ason.Enter().Flat() // elements land directly in the self-built data.items
 }
 func (nestProto) OnLeave(t *ason.Transformer) {
 	if t.Depth() == 1 {
 		w := t.W()
-		w.Open() // 空数组也物化
+		w.Open() // an empty array is materialized as well
 		w.Pop()
 		w.Pop()
 	}
@@ -124,7 +124,7 @@ func Example_restructure() {
 	// Output: {"id":"m","data":{"items":[{"a":1},{"b":2}]},"flag":true}
 }
 
-// 回放：body 先于 kind 到达时 Defer 起来，见到 kind 后 Release 重新派发——不对字段顺序做假设。
+// Replay: when body arrives before kind it is Deferred; once kind is seen Release dispatches it again, with no assumption about field order.
 type kindProto struct {
 	ason.BaseProtocol
 	kind string
@@ -136,7 +136,7 @@ func (p *kindProto) OnKey(t *ason.Transformer) ason.Action {
 		return ason.Capture(64)
 	case "body":
 		if p.kind == "" {
-			return ason.Defer(1 << 20) // 还不知道 kind：暂存（有上限）
+			return ason.Defer(1 << 20) // kind unknown yet: hold (bounded)
 		}
 		if p.kind == "note" {
 			return ason.Pass().As("text")
@@ -150,7 +150,7 @@ func (p *kindProto) OnValue(t *ason.Transformer, raw []byte) {
 		p.kind, _ = ason.JSONUnquote(raw)
 		t.W().KeyRaw(t.KeyRaw())
 		t.W().Raw(raw)
-		t.Release() // 当前值结束后回放 Defer 的 body
+		t.Release() // replay the Deferred body once the current value ends
 	}
 }
 
@@ -160,7 +160,7 @@ func Example_deferReplay() {
 	// Output: {"kind":"note","text":"be brief"}
 }
 
-// 子 hook：Enter().Via(hook) 把整棵子树的回调交给另一个 Protocol；容器闭合的 OnLeave 回到发起方。
+// Sub-hook: Enter().Via(hook) hands the callbacks of a whole subtree to another Protocol; OnLeave of the container goes back to the issuer.
 type prefixKeys struct {
 	ason.BaseProtocol
 	prefix string
@@ -191,7 +191,7 @@ func Example_subHook() {
 	// Output: {"meta":{"x_a":1,"x_b":{"c":2}},"d":3}
 }
 
-// 附件流式：data URL 只看前缀拆出 mime，base64 主体直通到另一个形状里，永不进内存。
+// Streaming an attachment: only the prefix of the data URL is inspected to extract the mime type; the base64 payload streams into another shape and never enters memory.
 type dataURLProto struct{ ason.BaseProtocol }
 
 func (dataURLProto) OnKey(t *ason.Transformer) ason.Action {
@@ -203,17 +203,17 @@ func (dataURLProto) OnKey(t *ason.Transformer) ason.Action {
 func (dataURLProto) OnPrefix(t *ason.Transformer, raw []byte, complete bool) (ason.Action, int) {
 	dec, off := ason.UnescapePrefix(raw)
 	if !bytes.HasPrefix(dec, []byte("data:")) {
-		return ason.Bail("不是 data URL"), 0
+		return ason.Bail("not a data URL"), 0
 	}
 	comma := bytes.IndexByte(dec, ',')
 	if comma < 0 {
-		return ason.Bail("data URL 头超出窗口"), 0
+		return ason.Bail("data URL header exceeds the window"), 0
 	}
 	mime := strings.TrimSuffix(string(dec[5:comma]), ";base64")
 	w := t.W()
 	w.Key("image")
 	w.RawString(`{"mime":"` + mime + `","data":"`)
-	return ason.Pass().Wrap(nil, []byte(`"}`)), off[comma+1] // 从逗号后的原始偏移续传
+	return ason.Pass().Wrap(nil, []byte(`"}`)), off[comma+1] // resume from the raw offset after the comma
 }
 
 func Example_dataURL() {
@@ -223,7 +223,7 @@ func Example_dataURL() {
 	// Output: true true 1246
 }
 
-// 严格校验：与 encoding/json 同样的拒绝面，任何位置的语法错误都会判定不支持。
+// Strict validation: the same rejection surface as encoding/json; a syntax error anywhere bails.
 func Example_strict() {
 	_, why := feed(ason.NewTransformer(ason.BaseProtocol{}), `{"a":1,"b":tru}`, 1)
 	fmt.Println(why)

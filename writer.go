@@ -1,31 +1,31 @@
 package ason
 
-// Writer 是输出器。核心是"惰性层"：
-// 进入一个容器时只登记，不写开括号；第一次在里面写东西时才把它（和所有未打开的祖先）
-// 打开。到闭合时若从没打开过，就什么都不写——被丢弃的元素不留痕迹。
+// Writer is the output side. Its core is the "lazy level":
+// entering a container only registers it, without writing the opening bracket; the first write inside opens it (and every
+// unopened ancestor). If it was never opened by the time it closes, nothing is written: a dropped element leaves no trace.
 //
-// 逗号由 Key/Elem 自动处理，协议代码不用关心输出顺序——这是"字段无序"在实现层的落点。
+// Commas are handled by Key/Elem automatically, so protocol code never cares about output order; this is where "fields in any order" lands in the implementation.
 type Writer struct {
 	buf    []byte
 	frames []wframe
-	hint   int // 上次交出的输出大小：下一次分配缓冲时按它预留，一块只分配一次
+	hint   int // size handed over last time: the next buffer is reserved by it, one allocation per chunk
 }
 
 type wframe struct {
-	key    string // 打开时先写的 key；"" = 数组元素或根
-	raw    []byte // 非空时打开层用它代替 "key":（保留原始空白）/ 元素前空白
+	key    string // key written first when the level opens; "" = array element or root
+	raw    []byte // when non-empty, used instead of "key": when opening (keeps the original whitespace) / whitespace before an element
 	isArr  bool
 	opened bool
-	n      int    // 已写子项数
-	trail  []byte // 上一个子项之后、逗号之前的原文空白：写下一个分隔符时先吐出来（保真）
+	n      int    // number of children written
+	trail  []byte // original whitespace after the previous child and before its comma: written before the next separator (fidelity)
 }
 
-// Level 当前层号（根 = 0）。
+// Level is the current level number (root = 0).
 func (w *Writer) Level() int { return len(w.frames) - 1 }
 
 func (w *Writer) push(key string, raw []byte, isArr bool) {
 	nf := wframe{key: key, isArr: isArr}
-	if n := len(w.frames); n < cap(w.frames) { // 复用槽位里的 raw 存储
+	if n := len(w.frames); n < cap(w.frames) { // reuse the raw storage left in the slot
 		nf.raw = append(w.frames[:n+1][n].raw[:0], raw...)
 	} else {
 		nf.raw = append([]byte(nil), raw...)
@@ -33,7 +33,7 @@ func (w *Writer) push(key string, raw []byte, isArr bool) {
 	w.frames = append(w.frames, nf)
 }
 
-// reserve 在缓冲为空时按上次交出的大小预留，避免一块输出里反复扩容。
+// reserve reserves the buffer by the size handed over last time when it is empty, avoiding repeated growth within one chunk.
 func (w *Writer) reserve(n int) {
 	if cap(w.buf) == 0 {
 		if n < w.hint {
@@ -46,7 +46,7 @@ func (w *Writer) reserve(n int) {
 	}
 }
 
-// pop 闭合当前层；从未打开则不写任何东西。closeWs 是原文里闭合括号前的空白。
+// pop closes the current level; nothing is written if it never opened. closeWs is the original whitespace before the closing bracket.
 func (w *Writer) pop(closeWs []byte) {
 	l := len(w.frames) - 1
 	if w.frames[l].opened {
@@ -95,14 +95,14 @@ func (w *Writer) sep(level int) {
 	f.n++
 }
 
-// trailWs 记下当前层上一个值与逗号之间的原文空白（派发帧读到逗号时调用）。
+// trailWs records the original whitespace between the previous value of the current level and its comma (called when a dispatch frame reads a comma).
 func (w *Writer) trailWs(ws []byte) {
 	if l := len(w.frames) - 1; l >= 0 {
 		w.frames[l].trail = append(w.frames[l].trail[:0], ws...)
 	}
 }
 
-// CanWriteAt 报告能否直接写到第 level 层：其上所有层都还没打开。
+// CanWriteAt reports whether level can be written to directly: every level above it is still unopened.
 func (w *Writer) CanWriteAt(level int) bool {
 	for l := level + 1; l < len(w.frames); l++ {
 		if w.frames[l].opened {
@@ -112,13 +112,13 @@ func (w *Writer) CanWriteAt(level int) bool {
 	return true
 }
 
-// Opened 报告第 level 层是否已打开。
+// Opened reports whether level has been opened.
 func (w *Writer) Opened(level int) bool {
 	return level >= 0 && level < len(w.frames) && w.frames[level].opened
 }
 
-// KeyAt 在第 level 层写 "name":，自动处理逗号与祖先层的打开。
-// 其上有已打开的层时返回 false 且不写。
+// KeyAt writes "name": at level, handling the comma and the opening of ancestor levels.
+// Returns false and writes nothing when an opened level exists above it.
 func (w *Writer) KeyAt(level int, name string) bool {
 	if !w.CanWriteAt(level) {
 		return false
@@ -131,7 +131,7 @@ func (w *Writer) KeyAt(level int, name string) bool {
 	return true
 }
 
-// KeyRawAt 同 KeyAt，但 key 用原始字节（含空白与冒号）原样写出。
+// KeyRawAt is KeyAt with the key written from its raw bytes (whitespace and colon included).
 func (w *Writer) KeyRawAt(level int, raw []byte) bool {
 	if !w.CanWriteAt(level) {
 		return false
@@ -142,10 +142,10 @@ func (w *Writer) KeyRawAt(level int, raw []byte) bool {
 	return true
 }
 
-// KeyRaw 作用于当前层。
+// KeyRaw acts on the current level.
 func (w *Writer) KeyRaw(raw []byte) { w.KeyRawAt(w.Level(), raw) }
 
-// ElemRawAt 同 ElemAt，并原样写出元素前的空白。
+// ElemRawAt is ElemAt that also writes the original whitespace before the element.
 func (w *Writer) ElemRawAt(level int, ws []byte) bool {
 	if !w.CanWriteAt(level) {
 		return false
@@ -156,7 +156,7 @@ func (w *Writer) ElemRawAt(level int, ws []byte) bool {
 	return true
 }
 
-// ElemAt 在第 level 层（数组）开始一个元素：只处理逗号与打开。
+// ElemAt starts an element at level (an array): only the comma and the opening are handled.
 func (w *Writer) ElemAt(level int) bool {
 	if !w.CanWriteAt(level) {
 		return false
@@ -166,30 +166,30 @@ func (w *Writer) ElemAt(level int) bool {
 	return true
 }
 
-// Key / Elem 作用于当前层。
+// Key / Elem act on the current level.
 func (w *Writer) Key(name string) { w.KeyAt(w.Level(), name) }
 func (w *Writer) Elem()           { w.ElemAt(w.Level()) }
 
-// PushObj / PushArr / Pop 让协议自己在输出侧建层：用于"一个输入容器要落到多层嵌套输出里"的场合
-// （如 Qwen 原生协议把 messages 放进 input.messages）。配合 Enter().Flat() 使用，
-// 协议负责在同一回调层级里成对地 Pop。
+// PushObj / PushArr / Pop let a protocol build levels on the output side itself, for "one input container lands in several nested
+// output levels" (the native Qwen protocol putting messages into input.messages, say). Used together with Enter().Flat();
+// the protocol is responsible for the matching Pop at the same callback level.
 func (w *Writer) PushObj(key string) { w.push(key, nil, false) }
 func (w *Writer) PushArr(key string) { w.push(key, nil, true) }
 func (w *Writer) Pop()               { w.pop(nil) }
 
-// Open 强制打开当前层（用于必须物化空容器的场合，如输出里一定要有 "content":[]）。
+// Open forces the current level open (when an empty container must be materialized, e.g. the output must contain "content":[]).
 func (w *Writer) Open() { w.ensureOpen(w.Level()) }
 
-// Raw 原样追加字节。调用方负责它出现在语法上合法的位置。
+// Raw appends bytes verbatim. The caller is responsible for them appearing at a syntactically valid position.
 func (w *Writer) Raw(b []byte)       { w.reserve(len(b)); w.buf = append(w.buf, b...) }
 func (w *Writer) RawString(s string) { w.buf = append(w.buf, s...) }
 func (w *Writer) Byte(c byte)        { w.buf = append(w.buf, c) }
 
-// JSONString 写一个带引号、已转义的 JSON 字符串。
+// JSONString writes a quoted, escaped JSON string.
 func (w *Writer) JSONString(s string) { w.buf = AppendJSONString(w.buf, s) }
 
-// Int 写十进制整数。
+// Int writes a decimal integer.
 func (w *Writer) Int(n int) { w.buf = appendInt(w.buf, n) }
 
-// Len 当前未取走的输出字节数。
+// Len is the number of output bytes not yet taken.
 func (w *Writer) Len() int { return len(w.buf) }

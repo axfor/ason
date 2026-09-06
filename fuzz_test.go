@@ -6,7 +6,7 @@ import (
 	"unicode/utf8"
 )
 
-// 原生模糊：透传对合法 JSON 必须逐字节相同；拒绝面与 encoding/json 一致（UTF-8 默认不查，与它相同）；永不 panic。
+// Native fuzzing: passthrough must be byte-identical for valid JSON; the rejection surface matches encoding/json (UTF-8 unchecked by default, like it); never panics.
 func FuzzPassthrough(f *testing.F) {
 	for _, s := range []string{
 		`{}`, `{"a":1}`, `{"a":[1,2,{"b":null}],"c":"x\né"}`, "{\n \"a\" : [ ] ,\n \"b\" : { }\n}\n",
@@ -30,20 +30,20 @@ func FuzzPassthrough(f *testing.F) {
 		}
 		out = append(out, tr.Finish()...)
 		bad, _ := tr.Unsupported()
-		valid := json.Valid(in) && firstByte(in) == '{' // 文法 + 根必须是对象；不用 Unmarshal（1000e1000 之类会因溢出而失败）
+		valid := json.Valid(in) && firstByte(in) == '{' // grammar + the root must be an object; not Unmarshal (1000e1000 and the like fail on overflow)
 		if valid && bad {
-			t.Fatalf("合法对象被判定不支持: %q", in)
+			t.Fatalf("valid object bailed: %q", in)
 		}
-		if !valid && !bad && len(in) < 10000 { // encoding/json 自己有 10000 层的嵌套上限，超长输入不比
-			t.Fatalf("非法输入被放行: %q", in)
+		if !valid && !bad && len(in) < 10000 { // encoding/json has a nesting limit of 10000; very long inputs are not compared
+			t.Fatalf("invalid input passed: %q", in)
 		}
 		if !bad && string(out) != string(in) {
-			t.Fatalf("透传不保真:\n in  %q\n out %q", in, out)
+			t.Fatalf("passthrough not faithful:\n in  %q\n out %q", in, out)
 		}
 	})
 }
 
-// KeyProbe 改写永不 panic，且输出仍是合法 JSON（输入合法时）。
+// KeyProbe rewriting never panics and the output is still valid JSON (when the input is).
 func FuzzKeyProbe(f *testing.F) {
 	for _, s := range []string{`{"k":"v","x":[1]}`, `{"x":{"k":1},"k":null}`, `{"k":"` + `A` + `"}`, `{"k":tru}`} {
 		f.Add([]byte(s))
@@ -58,15 +58,15 @@ func FuzzKeyProbe(f *testing.F) {
 		}
 		var v map[string]any
 		if json.Unmarshal(in, &v) == nil && !json.Valid(out) {
-			t.Fatalf("输出不是合法 JSON:\n in  %q\n out %q", in, out)
+			t.Fatalf("output is not valid JSON:\n in  %q\n out %q", in, out)
 		}
 	})
 }
 
-// 开启 UTF-8 校验：放行 ⇔ (默认模式放行 且 utf8.Valid(in))，放行时输出仍逐字节相同；RootAny 下数组根同样成立。
+// UTF-8 validation on: passes ⇔ (the default mode passes and utf8.Valid(in)), and the output stays byte-identical; array roots under RootAny likewise.
 func FuzzStrictModes(f *testing.F) {
 	for _, s := range []string{
-		`{"a":"é中😀"}`, "{\"a\":\"\xC0\x80\"}", "{\"\xED\xA0\x80\":1}", "{\"a\":\"\xE4\xB8\"}",
+		`{"a":"é€😀"}`, "{\"a\":\"\xC0\x80\"}", "{\"\xED\xA0\x80\":1}", "{\"a\":\"\xE4\xB8\"}",
 		`[1,"s",{"a":[true]}]`, `[1,]`, `{"a":1,"a":2}`, "[\"\xFF\"]",
 	} {
 		f.Add([]byte(s), 3)
@@ -99,22 +99,22 @@ func FuzzStrictModes(f *testing.F) {
 		_, isObj := v.(map[string]any)
 		_, isArr := v.([]any)
 		if valid && (isObj || isArr) && !anyOK {
-			t.Fatalf("RootAny 拒绝了合法的对象/数组: %q", in)
+			t.Fatalf("RootAny rejected a valid object/array: %q", in)
 		}
 		if anyOK && !(isObj || isArr) {
-			t.Fatalf("RootAny 放行了非对象/数组: %q", in)
+			t.Fatalf("RootAny passed a non-object/array: %q", in)
 		}
 		if plainOK && !anyOK {
-			t.Fatalf("默认模式放行但 RootAny 拒绝: %q", in)
+			t.Fatalf("the default mode passed but RootAny rejected: %q", in)
 		}
 		if anyOK && string(anyOut) != string(in) || plainOK && string(plainOut) != string(in) {
-			t.Fatalf("透传不保真: %q", in)
+			t.Fatalf("passthrough not faithful: %q", in)
 		}
 		if wantU8 := anyOK && utf8.Valid(in); wantU8 != u8OK {
-			t.Fatalf("UTF-8 校验判定 %v，期望 %v: %q", u8OK, wantU8, in)
+			t.Fatalf("UTF-8 validation verdict %v, want %v: %q", u8OK, wantU8, in)
 		}
 		if u8OK && string(u8Out) != string(in) {
-			t.Fatalf("UTF-8 模式透传不保真: %q", in)
+			t.Fatalf("UTF-8 mode passthrough not faithful: %q", in)
 		}
 	})
 }

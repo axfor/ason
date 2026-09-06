@@ -1,4 +1,4 @@
-// 聊天请求转换：见 conv 包的说明。样例里 system 上提、content 变 parts、图片 data URL 拆成 source、tools 改形状。
+// Chat request conversion: see the conv package. In the sample, system is hoisted, content becomes parts, image data URLs become source and tools change shape.
 //
 //	go run ./examples/chatconv
 package main

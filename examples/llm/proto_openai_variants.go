@@ -5,14 +5,14 @@ import (
 	"strconv"
 )
 
-// ---- Qwen 兼容模式（qwenEnableCompatible，默认开启）----
+// ---- Qwen compatible mode (qwenEnableCompatible, on by default) ----
 //
-// 官方 TransformRequestBodyHeaders 兼容分支：model 存在才改写；映射结果非空、
-// 某条 message 带非空 reasoning_content、且模型支持时，补 preserve_thinking:true。
-// 不设置 Accept / isStreaming（官方这条分支不调 defaultTransformRequestBody）。
+// Buffered TransformRequestBodyHeaders, compatible branch: rewrite only when model is present; when the mapped model is
+// non-empty, some message has a non-empty reasoning_content and the model supports it, add preserve_thinking:true.
+// Accept / isStreaming are not set (this buffered branch does not call defaultTransformRequestBody).
 
 type QwenVariant struct {
-	// SupportsPreserveThinking 复刻 qwenSupportsPreserveThinking。
+	// SupportsPreserveThinking reproduces qwenSupportsPreserveThinking.
 	SupportsPreserveThinking func(model string) bool
 	ptRaw                    []byte
 	ptSeen                   bool
@@ -47,10 +47,10 @@ func (v *QwenVariant) Tail(t *Transformer, st *OpenAIState) {
 	}
 }
 
-// ---- 智谱（chat completion）----
+// ---- Zhipu (chat completion) ----
 //
-// 官方：reasoning_effort 非空 → thinking 整体替换为 {"type":"enabled"} 并删掉 reasoning_effort；
-// 任一 message 带非空 reasoning_content → thinking.clear_thinking = false。
+// Buffered path: a non-empty reasoning_effort → thinking is replaced as a whole by {"type":"enabled"} and reasoning_effort deleted;
+// any message with a non-empty reasoning_content → thinking.clear_thinking = false.
 
 type ZhipuVariant struct {
 	effortRaw  []byte
@@ -93,7 +93,7 @@ func (v *ZhipuVariant) Tail(t *Transformer, st *OpenAIState) {
 		thinking = v.thinkRaw
 	}
 	if v.effortSeen && gjsonStringNonEmpty(v.effortRaw) {
-		thinking = lit10 // sjson 用 map 整体替换
+		thinking = lit10 // sjson replaces it with a map as a whole
 	} else if v.effortSeen {
 		w.Key("reasoning_effort")
 		w.Raw(v.effortRaw)
@@ -102,7 +102,7 @@ func (v *ZhipuVariant) Tail(t *Transformer, st *OpenAIState) {
 		var err error
 		thinking, err = setObjectKey(thinking, "clear_thinking", lit11)
 		if err != nil {
-			t.Bail("thinking 不是对象，sjson 的处理方式未复刻")
+			t.Bail("thinking is not an object, sjson's handling not reproduced")
 			return
 		}
 	}
@@ -112,10 +112,10 @@ func (v *ZhipuVariant) Tail(t *Transformer, st *OpenAIState) {
 	}
 }
 
-// ---- OpenRouter（chat completion）----
+// ---- OpenRouter (chat completion) ----
 //
-// 官方：reasoning_max_tokens 存在且 Int() != 0 → 删 reasoning_effort、
-// 置 reasoning.max_tokens、删 reasoning_max_tokens；否则原样。
+// Buffered path: when reasoning_max_tokens exists and Int() != 0 → delete reasoning_effort, set reasoning.max_tokens,
+// delete reasoning_max_tokens; otherwise unchanged.
 
 type OpenRouterVariant struct {
 	effortRaw  []byte
@@ -185,14 +185,14 @@ func (v *OpenRouterVariant) Tail(t *Transformer, st *OpenAIState) {
 	}
 	reasoning, err := setObjectKey(reasoning, "max_tokens", []byte(strconv.FormatInt(n, 10)))
 	if err != nil {
-		t.Bail("reasoning 不是对象，sjson 的处理方式未复刻")
+		t.Bail("reasoning is not an object, sjson's handling not reproduced")
 		return
 	}
 	w.Key("reasoning")
 	w.Raw(reasoning)
 }
 
-// setObjectKey 复刻 sjson 对 "obj.key" 的设置：obj 缺失则新建；存在则替换/追加该 key。
+// setObjectKey reproduces sjson setting "obj.key": creates obj when missing, otherwise replaces / appends the key.
 func setObjectKey(obj []byte, key string, val []byte) ([]byte, error) {
 	if obj == nil || string(obj) == "null" {
 		return []byte(`{"` + key + `":` + string(val) + `}`), nil
@@ -211,7 +211,7 @@ func (notObjectError) Error() string { return "not an object" }
 
 var errNotObject error = notObjectError{}
 
-// gjsonInt 复刻 gjson.Result.Int() 的主要分支：数字截断为整数；字符串按整数解析；true 为 1。
+// gjsonInt reproduces the main branches of gjson.Result.Int(): numbers truncated to integers, strings parsed as integers, true is 1.
 func gjsonInt(raw []byte) int64 {
 	if len(raw) == 0 {
 		return 0
@@ -224,10 +224,10 @@ func gjsonInt(raw []byte) int64 {
 		if !ok {
 			return 0
 		}
-		return gjsonParseInt(s) // gjson 对字符串只认纯数字（可带负号），其余为 0
+		return gjsonParseInt(s) // gjson only accepts plain digits (optional minus sign) in strings, anything else is 0
 	case '-', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9':
 		if f, err := strconv.ParseFloat(string(raw), 64); err == nil {
-			return int64(f) // safeInt / 标准转换：截断
+			return int64(f) // safeInt / standard conversion: truncation
 		}
 	}
 	return 0

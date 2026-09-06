@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// run 把输入按给定块大小切开喂入，模拟任意 TCP 分段
+// run feeds the input in chunks of the given size, simulating arbitrary TCP segmentation
 func run(t *testing.T, in string, chunk int) string {
 	tr := New()
 	var sb strings.Builder
@@ -22,53 +22,53 @@ func run(t *testing.T, in string, chunk int) string {
 	return sb.String()
 }
 
-const basic = `{"model":"claude-3","max_tokens":100,"stream":true,"messages":[{"role":"system","content":"你是助手"},{"role":"user","content":"你好"}]}`
+const basic = `{"model":"claude-3","max_tokens":100,"stream":true,"messages":[{"role":"system","content":"You are an assistant"},{"role":"user","content":"Hello"}]}`
 
 func TestBasic(t *testing.T) {
 	for _, cs := range []int{1, 3, 7, 16, 64, 4096} {
 		got := run(t, basic, cs)
 		var m map[string]any
 		if err := json.Unmarshal([]byte(got), &m); err != nil {
-			t.Fatalf("chunk=%d 输出不是合法 JSON: %v\n%s", cs, err, got)
+			t.Fatalf("chunk=%d output is not valid JSON: %v\n%s", cs, err, got)
 		}
 		if m["model"] != "claude-3" {
 			t.Errorf("chunk=%d model=%v", cs, m["model"])
 		}
-		if m["system"] != "你是助手" {
+		if m["system"] != "You are an assistant" {
 			t.Errorf("chunk=%d system=%v", cs, m["system"])
 		}
 		msgs, _ := m["messages"].([]any)
 		if len(msgs) != 1 {
-			t.Fatalf("chunk=%d messages 数=%d，应为 1（system 已提取）", cs, len(msgs))
+			t.Fatalf("chunk=%d messages count=%d, expected 1 (system extracted)", cs, len(msgs))
 		}
 		m0 := msgs[0].(map[string]any)
 		if m0["role"] != "user" {
 			t.Errorf("chunk=%d role=%v", cs, m0["role"])
 		}
-		if m0["content"] != "你好" {
+		if m0["content"] != "Hello" {
 			t.Errorf("chunk=%d content=%v", cs, m0["content"])
 		}
 	}
 }
 
-// 转义序列被切开时不能出错
+// Escape sequences split across chunks must not break
 func TestEscapeSplit(t *testing.T) {
-	in := `{"model":"m","messages":[{"role":"user","content":"引号\"与反斜杠\\和换行\n还有ä"}]}`
+	in := `{"model":"m","messages":[{"role":"user","content":"quote\" backslash\\ newline\n and ä é"}]}`
 	for _, cs := range []int{1, 2, 5, 13} {
 		got := run(t, in, cs)
 		var m map[string]any
 		if err := json.Unmarshal([]byte(got), &m); err != nil {
-			t.Fatalf("chunk=%d 非法 JSON: %v\n%s", cs, err, got)
+			t.Fatalf("chunk=%d invalid JSON: %v\n%s", cs, err, got)
 		}
 		msgs := m["messages"].([]any)
-		want := "引号\"与反斜杠\\和换行\n还有ä"
+		want := "quote\" backslash\\ newline\n and ä é"
 		if got := msgs[0].(map[string]any)["content"]; got != want {
 			t.Errorf("chunk=%d content=%q want=%q", cs, got, want)
 		}
 	}
 }
 
-// 大 content：验证内存不随长度增长（输出应边生成边取走）
+// Large content: memory must not grow with its length (output is taken as it is produced)
 func TestLargeContentStreams(t *testing.T) {
 	big := strings.Repeat("y", 1<<20)
 	in := `{"model":"m","messages":[{"role":"user","content":"` + big + `"}]}`
@@ -88,12 +88,12 @@ func TestLargeContentStreams(t *testing.T) {
 		}
 	}
 	total += len(tr.Finish())
-	// 提交点存在时，首次下发前会攒满 CommitBytes——这是回落窗口的代价。
-	// 关键是它有上界、不随 content 长度增长。
+	// With a commit point, CommitBytes accumulate before the first release: the price of the fallback window.
+	// What matters is that it is bounded and does not grow with the content length.
 	if maxHeld > CommitBytes+16*1024 {
-		t.Errorf("单次持有 %d 字节，超过提交点上界（未流式）", maxHeld)
+		t.Errorf("held %d bytes at once, above the commit point bound (not streaming)", maxHeld)
 	}
 	if total < 1<<20 {
-		t.Errorf("输出总量 %d，小于输入 content", total)
+		t.Errorf("total output %d is smaller than the input content", total)
 	}
 }

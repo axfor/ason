@@ -6,23 +6,23 @@ import (
 	"math"
 )
 
-// OpenAI → 通义千问 DashScope 原生协议（qwenEnableCompatible=false）的流式转换。
+// Streaming conversion OpenAI → the native Tongyi Qianwen DashScope protocol (qwenEnableCompatible=false).
 //
-// 逐行对照官方 qwen.go buildQwenTextGenerationRequest / chatMessage2QwenMessage：
-//   - messages 落到 input.messages，每条消息 role / name / reasoning_content / tool_calls 照搬，
-//     content 字符串直通，数组按 text / image 拆成 DashScope 的多模态形态（图片 URL 直通，不解码）；
-//   - 顶层标量归并进 parameters，在 Tail 用官方同构 struct 一次写出（top_p 钳制、incremental_output 依赖 tools）；
-//   - 请求头（Accept / X-DashScope-SSE）与路径（qwen-vl 走多模态接口）依赖 model 与 stream，集成层在放行前施加。
+// Derived line by line from the buffered qwen.go buildQwenTextGenerationRequest / chatMessage2QwenMessage:
+//   - messages land in input.messages; role / name / reasoning_content / tool_calls of each message are copied, string content
+//     streams through, array content is split by text / image into DashScope's multimodal shape (image URLs pass through undecoded);
+//   - top-level scalars are folded into parameters and written once in Tail with the same struct as the buffered path (top_p clamped, incremental_output depends on tools);
+//   - the request headers (Accept / X-DashScope-SSE) and path (qwen-vl uses the multimodal endpoint) depend on model and stream; the integration layer applies them before release.
 
 type QwenNativeOptions struct {
-	// MapModel 复刻官方 mapModel：model 为空或映射结果为空时返回错误。
+	// MapModel reproduces the buffered mapModel: an error when model is empty or maps to empty.
 	MapModel func(model string) (string, error)
-	// SupportsPreserveThinking 复刻 qwenSupportsPreserveThinking（作用于映射后的 model）。
+	// SupportsPreserveThinking reproduces qwenSupportsPreserveThinking (applied to the mapped model).
 	SupportsPreserveThinking func(model string) bool
-	// EnableSearch 对应配置 qwenEnableSearch。
+	// EnableSearch mirrors the setting qwenEnableSearch.
 	EnableSearch bool
-	// DeveloperToSystem：官方 handleRequestBody 对不支持 developer role 的 provider 会把它转成 system
-	// （整个请求经 struct 往返，但 DashScope 请求本来就是 struct 构建的，只有 role 这一处可见）。
+	// DeveloperToSystem: the buffered handleRequestBody turns the developer role into system for providers that do not support it
+	// (the whole request goes through a struct round trip there, but a DashScope request is struct-built anyway, so only role is visible).
 	DeveloperToSystem bool
 }
 
@@ -32,7 +32,7 @@ const (
 	qwenTopPMax             = 0.999999
 )
 
-// 与官方逐字段对齐（只用于 Tail / 已 Capture 的小值）
+// aligned field by field with the buffered path (only for Tail / small Captured values)
 type qwenParameters struct {
 	ResultFormat      string    `json:"result_format,omitempty"`
 	MaxTokens         int       `json:"max_tokens,omitempty"`
@@ -82,7 +82,7 @@ type qwenProto struct {
 	seed       int
 	temp, topP float64
 	toolsRaw   []byte
-	toolsN     int // -1 = tools 为 null 或未出现
+	toolsN     int // -1 = tools is null or absent
 
 	messagesSeen  bool
 	inputMsgs     int
@@ -90,7 +90,7 @@ type qwenProto struct {
 	m             qwenMsg
 }
 
-// NewQwenNative 构造 OpenAI → DashScope 原生协议转换器。
+// NewQwenNative builds the OpenAI → native DashScope transformer.
 func NewQwenNative(opt QwenNativeOptions) *Transformer {
 	if opt.MapModel == nil {
 		opt.MapModel = func(m string) (string, error) {
@@ -113,11 +113,11 @@ func (p *qwenProto) Prelude() Prelude {
 	return Prelude{Model: p.model, ModelSeen: p.modelSeen, Stream: p.stream, StreamSeen: p.streamSeen}
 }
 
-// IncrementalOutput 复刻官方 parameters.incremental_output = streaming && 无 tools。
-// 集成层在整份 body 结束后用它写 incrementalStreaming 上下文键（响应侧要用）。
+// IncrementalOutput reproduces the buffered parameters.incremental_output = streaming && no tools.
+// The integration layer uses it after the whole body to write the incrementalStreaming context key (needed on the response side).
 func (p *qwenProto) IncrementalOutput() bool { return p.stream && p.toolsN <= 0 }
 
-// ---- 派发 ----
+// ---- dispatch ----
 
 func (p *qwenProto) OnKey(t *Transformer) Action {
 	switch t.Depth() {
@@ -134,7 +134,7 @@ func (p *qwenProto) OnKey(t *Transformer) Action {
 		case "tools":
 			return Capture(toolsCap)
 		}
-		return Skip() // 官方 qwenTextGenParameters 不读其余字段
+		return Skip() // the buffered qwenTextGenParameters reads no other field
 	case 3:
 		m := &p.m
 		switch t.Last() {
@@ -150,7 +150,7 @@ func (p *qwenProto) OnKey(t *Transformer) Action {
 			m.contentSeen = true
 			return Probe()
 		}
-		return Skip() // tool_call_id / audio / refusal …：qwenMessage 没有这些字段
+		return Skip() // tool_call_id / audio / refusal ...: qwenMessage has no such fields
 	case 5:
 		pt := &p.m.part
 		if pt.dead {
@@ -192,7 +192,7 @@ func (p *qwenProto) OnKey(t *Transformer) Action {
 		}
 		return Skip() // detail
 	}
-	return Bail("意外的路径: " + t.PathString())
+	return Bail("unexpected path: " + t.PathString())
 }
 
 func (p *qwenProto) OnElem(t *Transformer) Action {
@@ -200,7 +200,7 @@ func (p *qwenProto) OnElem(t *Transformer) Action {
 	case 2, 4:
 		return Probe()
 	}
-	return Bail("意外的数组: " + t.PathString())
+	return Bail("unexpected array: " + t.PathString())
 }
 
 func (p *qwenProto) OnStart(t *Transformer, kind ValueKind) Action {
@@ -208,39 +208,39 @@ func (p *qwenProto) OnStart(t *Transformer, kind ValueKind) Action {
 	switch t.Depth() {
 	case 1: // messages → input.messages
 		if kind != KindArray {
-			return Bail("messages 不是数组")
+			return Bail("messages is not an array")
 		}
 		w.PushObj("input")
 		w.PushArr("messages")
 		return Enter().Flat()
 	case 2:
 		if kind != KindObject {
-			return Bail("message 不是对象")
+			return Bail("message is not an object")
 		}
 		p.m = qwenMsg{}
 		p.inputMsgs++
-		return Enter() // 每条消息都输出（system 不搬家）
+		return Enter() // every message is written (system stays in place)
 	case 3:
 		switch t.Last() {
 		case "content":
 			switch kind {
 			case KindString:
 				p.m.contentWritten = true
-				return Pass() // 字符串原样直通
+				return Pass() // string: verbatim
 			case KindArray:
 				p.m.contentWritten = true
-				return Enter().Lazy() // 多模态：逐 part 映射；一个 part 都没落下时官方是 null，OnLeave 处理
+				return Enter().Lazy() // multimodal: map part by part; when no part lands the buffered path has null, handled in OnLeave
 			}
-			return Skip() // 对象 / 标量 / null：ParseContent 得 nil → "content":null
+			return Skip() // object / scalar / null: ParseContent yields nil → "content":null
 		case "reasoning_content":
 			if kind != KindString {
-				return Bail("reasoning_content 不是字符串，官方 struct 解析失败")
+				return Bail("reasoning_content is not a string, the buffered struct decoding fails")
 			}
-			return Prefix(1) // 非空才有意义（omitempty），且要记下"见过非空"
+			return Prefix(1) // only meaningful when non-empty (omitempty), and "seen non-empty" must be recorded
 		}
 	case 4:
 		if kind != KindObject {
-			return Skip() // 官方 ParseContent 跳过非 map 元素
+			return Skip() // the buffered ParseContent skips non-map elements
 		}
 		p.m.part = qwenPart{}
 		return Enter().Lazy()
@@ -262,15 +262,15 @@ func (p *qwenProto) OnStart(t *Transformer, kind ValueKind) Action {
 		}
 	case 6: // image_url.url → "image"
 		if kind != KindString {
-			return Bail("image_url.url 不是字符串，官方会 panic")
+			return Bail("image_url.url is not a string, the buffered path panics")
 		}
 		return Prefix(1)
 	}
 	_ = w
-	return Bail("意外的 Probe: " + t.PathString())
+	return Bail("unexpected Probe: " + t.PathString())
 }
 
-// ---- 值到齐 ----
+// ---- values complete ----
 
 func (p *qwenProto) OnValue(t *Transformer, raw []byte) {
 	w := t.W()
@@ -281,7 +281,7 @@ func (p *qwenProto) OnValue(t *Transformer, raw []byte) {
 		case "model":
 			s, ok := jsonUnquote(raw)
 			if !ok {
-				t.Bail("model 不是字符串")
+				t.Bail("model is not a string")
 				return
 			}
 			p.model, p.modelSeen = s, true
@@ -297,7 +297,7 @@ func (p *qwenProto) OnValue(t *Transformer, raw []byte) {
 				p.stream = true
 			case "false", "null":
 			default:
-				t.Bail("stream 不是布尔")
+				t.Bail("stream is not a boolean")
 				return
 			}
 			p.streamSeen = !isNull
@@ -306,7 +306,7 @@ func (p *qwenProto) OnValue(t *Transformer, raw []byte) {
 				return
 			}
 			if !isIntLiteral(raw) {
-				t.Bail(t.Last() + " 不是整数")
+				t.Bail(t.Last() + " is not an integer")
 				return
 			}
 			v := atoi(raw)
@@ -323,7 +323,7 @@ func (p *qwenProto) OnValue(t *Transformer, raw []byte) {
 				return
 			}
 			if !isNumLiteral(raw) {
-				t.Bail(t.Last() + " 不是数字")
+				t.Bail(t.Last() + " is not a number")
 				return
 			}
 			f, _ := parseFloat(raw)
@@ -338,7 +338,7 @@ func (p *qwenProto) OnValue(t *Transformer, raw []byte) {
 			}
 			var tools []oaiTool
 			if err := json.Unmarshal(raw, &tools); err != nil {
-				t.Bail("tools 解析失败: " + err.Error())
+				t.Bail("tools failed to decode: " + err.Error())
 				return
 			}
 			p.toolsRaw = append([]byte(nil), raw...)
@@ -349,7 +349,7 @@ func (p *qwenProto) OnValue(t *Transformer, raw []byte) {
 		case "role":
 			s, ok := jsonUnquote(raw)
 			if !ok {
-				t.Bail("role 不是字符串")
+				t.Bail("role is not a string")
 				return
 			}
 			p.m.roleSeen = true
@@ -361,7 +361,7 @@ func (p *qwenProto) OnValue(t *Transformer, raw []byte) {
 		case "name":
 			s, ok := jsonUnquote(raw)
 			if !ok {
-				t.Bail("name 不是字符串")
+				t.Bail("name is not a string")
 				return
 			}
 			if s != "" { // omitempty
@@ -374,7 +374,7 @@ func (p *qwenProto) OnValue(t *Transformer, raw []byte) {
 			}
 			var tcs []qwenToolCall
 			if err := json.Unmarshal(raw, &tcs); err != nil {
-				t.Bail("tool_calls 解析失败: " + err.Error())
+				t.Bail("tool_calls failed to decode: " + err.Error())
 				return
 			}
 			if len(tcs) > 0 { // omitempty
@@ -401,11 +401,11 @@ func (p *qwenProto) OnValue(t *Transformer, raw []byte) {
 					t.Release()
 				}
 			default:
-				pt.dead = true // ParseContent 的 switch 匹配不到 → 不进列表
+				pt.dead = true // ParseContent's switch matches nothing → not added to the list
 				t.DropDeferred()
 			}
 		case "input_audio", "file":
-			// 官方 ParseContent 会做 .(string) 断言，缺字段即 panic；成功则在 qwen 里落成空对象 {}
+			// the buffered ParseContent asserts .(string) and panics when the field is missing; on success qwen gets an empty object {}
 			var obj map[string]any
 			if err := json.Unmarshal(raw, &obj); err != nil {
 				pt.dead = true
@@ -417,7 +417,7 @@ func (p *qwenProto) OnValue(t *Transformer, raw []byte) {
 			}
 			for _, k := range keys {
 				if _, ok := obj[k].(string); !ok {
-					t.Bail(t.Last() + "." + k + " 缺失，官方会 panic")
+					t.Bail(t.Last() + "." + k + " missing, the buffered path panics")
 					return
 				}
 			}
@@ -437,14 +437,14 @@ func (p *qwenProto) OnPrefix(t *Transformer, raw []byte, complete bool) (Action,
 		p.reasoningSeen = true
 		w.KeyRaw(t.KeyRaw())
 		return Pass().Wrap(lit0, lit0), 0
-	case 5: // part.text → {"text":…}
+	case 5: // part.text → {"text":...}
 		if empty {
 			w.Open() // {}
 			return Skip(), 0
 		}
 		w.KeyRaw(t.KeyRaw())
 		return Pass().Wrap(lit0, lit0), 0
-	case 6: // image_url.url → {"image":…}
+	case 6: // image_url.url → {"image":...}
 		if empty {
 			w.Open()
 			return Skip(), 0
@@ -452,15 +452,15 @@ func (p *qwenProto) OnPrefix(t *Transformer, raw []byte, complete bool) (Action,
 		w.Key("image")
 		return Pass().Wrap(lit0, lit0), 0
 	}
-	return Bail("意外的 Prefix: " + t.PathString()), 0
+	return Bail("unexpected Prefix: " + t.PathString()), 0
 }
 
-// ---- 容器闭合 ----
+// ---- containers closing ----
 
 func (p *qwenProto) OnLeave(t *Transformer) {
 	w := t.W()
 	switch t.Depth() {
-	case 1: // messages：官方 make(...,0)，物化 [] 后成对弹出 input.messages 两层
+	case 1: // messages: buffered make(...,0); materialize [] then pop the two levels of input.messages together
 		p.messagesSeen = true
 		if p.inputMsgs == 0 {
 			t.Bail("no message found in the request body")
@@ -478,15 +478,15 @@ func (p *qwenProto) OnLeave(t *Transformer) {
 				return
 			}
 		}
-		if !m.roleSeen { // Role 无 omitempty
+		if !m.roleSeen { // Role has no omitempty
 			w.Key("role")
 			w.RawString(`""`)
 		}
-		if !m.contentWritten { // ParseContent 得 nil → null；未出现同样是 nil
+		if !m.contentWritten { // ParseContent yields nil → null; absent is nil as well
 			w.Key("content")
 			w.RawString("null")
 		}
-	case 3: // content 数组：官方 contents 从 nil 开始 append，一个都没落下就是 null
+	case 3: // content array: buffered contents starts as nil and appends, nothing landed means null
 		if !w.Opened(w.Level()) {
 			w.KeyAt(w.Level()-1, "content")
 			w.RawString("null")
@@ -497,12 +497,12 @@ func (p *qwenProto) OnLeave(t *Transformer) {
 		}
 	case 5:
 		if !p.m.part.urlSeen {
-			t.Bail("image_url.url 缺失，官方会 panic")
+			t.Bail("image_url.url missing, the buffered path panics")
 		}
 	}
 }
 
-// ---- 收尾 ----
+// ---- tail ----
 
 func (p *qwenProto) Tail(t *Transformer) {
 	w := t.W()
@@ -532,7 +532,7 @@ func (p *qwenProto) Tail(t *Transformer) {
 		PreserveThinking:  p.reasoningSeen && p.opt.SupportsPreserveThinking(p.mapped),
 	}
 	if p.toolsRaw != nil {
-		_ = json.Unmarshal(p.toolsRaw, &params.Tools) // OnValue 已校验
+		_ = json.Unmarshal(p.toolsRaw, &params.Tools) // validated in OnValue
 	}
 	b, _ := json.Marshal(params)
 	w.Key("parameters")

@@ -16,12 +16,12 @@ func chunkSizes(n int) []int {
 	return cs
 }
 
-// 合法的多字节 UTF-8（含 4 字节 emoji）在开启校验后原样透传，任何分块方式都一样。
+// Valid multibyte UTF-8 (4-byte emoji included) passes through unchanged with validation on, whatever the chunking.
 func TestUTF8ValidPassthrough(t *testing.T) {
 	ins := []string{
-		`{"名字":"张三","emoji":"😀🎉","mix":"a€b中c𝄞d","ctrl":"é\n"}`,
-		"{\"k\\u4e2d\":\"é中\U0001F600\"}",
-		`{"a":{"深":["层","值",{"键":"值"}]}}`,
+		`{"Grüße":"Привет","emoji":"😀🎉","mix":"a€bαc𝄞d","ctrl":"é\n"}`,
+		"{\"k\\u20ac\":\"é€\U0001F600\"}",
+		`{"a":{"γλώσσα":["αβγ","δεζ",{"ключ":"значение"}]}}`,
 	}
 	for _, in := range ins {
 		for _, cs := range chunkSizes(len(in)) {
@@ -35,29 +35,29 @@ func TestUTF8ValidPassthrough(t *testing.T) {
 	}
 }
 
-// 非法序列：过长编码、代理对、超出 U+10FFFF、非法首字节、孤立续字节、被引号/反斜杠/输入结尾截断。
+// Invalid sequences: overlong encodings, surrogates, above U+10FFFF, invalid first bytes, stray continuation bytes, cut by a quote / backslash / the end of input.
 func TestUTF8InvalidRejected(t *testing.T) {
 	bad := map[string]string{
-		"过长 2 字节 C0 80":    "{\"s\":\"\xC0\x80\"}",
-		"过长 2 字节 C1 BF":    "{\"s\":\"\xC1\xBF\"}",
-		"过长 3 字节 E0 80 80": "{\"s\":\"\xE0\x80\x80\"}",
-		"过长 4 字节 F0 80":    "{\"s\":\"\xF0\x80\x80\x80\"}",
-		"代理对 ED A0 80":     "{\"s\":\"\xED\xA0\x80\"}",
-		"代理对 ED BF BF":     "{\"s\":\"\xED\xBF\xBF\"}",
-		"超出 U+10FFFF":      "{\"s\":\"\xF4\x90\x80\x80\"}",
-		"首字节 F5":           "{\"s\":\"\xF5\x80\x80\x80\"}",
-		"首字节 FF":           "{\"s\":\"\xFF\"}",
-		"孤立续字节":            "{\"s\":\"a\x80b\"}",
-		"续字节不足后接引号":        "{\"s\":\"\xE4\xB8\"}",
-		"续字节不足后接反斜杠":       "{\"s\":\"\xE4\xB8\\n\"}",
-		"续字节不足后接 ASCII":    "{\"s\":\"\xE4\xB8x\"}",
-		"续字节不足后接新序列":       "{\"s\":\"\xE4\xB8\xE4\xB8\xAD\"}",
-		"key 里过长编码":        "{\"\xC0\x80\":1}",
-		"key 里孤立续字节":       "{\"a\x80\":1}",
-		"key 里截断":          "{\"\xE4\xB8\":1}",
-		"key 里代理对":         "{\"\xED\xA0\x80\":1}",
-		"Skip 区域里":         "{\"skip\":{\"s\":\"\xC0\x80\"}}",
-		"Pass 深层里":         "{\"a\":[1,{\"b\":\"\xFF\"}]}",
+		"overlong 2-byte C0 80":                  "{\"s\":\"\xC0\x80\"}",
+		"overlong 2-byte C1 BF":                  "{\"s\":\"\xC1\xBF\"}",
+		"overlong 3-byte E0 80 80":               "{\"s\":\"\xE0\x80\x80\"}",
+		"overlong 4-byte F0 80":                  "{\"s\":\"\xF0\x80\x80\x80\"}",
+		"surrogate ED A0 80":                     "{\"s\":\"\xED\xA0\x80\"}",
+		"surrogate ED BF BF":                     "{\"s\":\"\xED\xBF\xBF\"}",
+		"above U+10FFFF":                         "{\"s\":\"\xF4\x90\x80\x80\"}",
+		"first byte F5":                          "{\"s\":\"\xF5\x80\x80\x80\"}",
+		"first byte FF":                          "{\"s\":\"\xFF\"}",
+		"stray continuation byte":                "{\"s\":\"a\x80b\"}",
+		"missing continuation then quote":        "{\"s\":\"\xE4\xB8\"}",
+		"missing continuation then backslash":    "{\"s\":\"\xE4\xB8\\n\"}",
+		"missing continuation then ASCII":        "{\"s\":\"\xE4\xB8x\"}",
+		"missing continuation then new sequence": "{\"s\":\"\xE4\xB8\xE4\xB8\xAD\"}",
+		"overlong encoding in a key":             "{\"\xC0\x80\":1}",
+		"stray continuation byte in a key":       "{\"a\x80\":1}",
+		"truncated sequence in a key":            "{\"\xE4\xB8\":1}",
+		"surrogate in a key":                     "{\"\xED\xA0\x80\":1}",
+		"inside a Skip region":                   "{\"skip\":{\"s\":\"\xC0\x80\"}}",
+		"deep inside a Pass region":              "{\"a\":[1,{\"b\":\"\xFF\"}]}",
 	}
 	prot := KeyProbeOptions{Keys: map[string]int{"skip": 1 << 20},
 		OnKey: func(t *Transformer, k string, raw []byte) ([]byte, bool) { return nil, false }}
@@ -70,23 +70,23 @@ func TestUTF8InvalidRejected(t *testing.T) {
 				tr := mk()
 				tr.SetValidateUTF8(true)
 				if _, ok, _ := feedAll(tr, in, cs); ok {
-					t.Fatalf("%s chunk=%d: 非法 UTF-8 被放行了", name, cs)
+					t.Fatalf("%s chunk=%d: invalid UTF-8 was passed", name, cs)
 				}
 			}
 		}
-		// 默认不校验：与 encoding/json 的 Valid 一致（只查文法，不查编码）
+		// no validation by default: matches encoding/json Valid (grammar only, not encoding)
 		tr := NewTransformer(BaseProtocol{})
 		got, ok, why := feedAll(tr, in, len(in))
 		if !ok || got != in {
-			t.Fatalf("%s 默认模式应透传: ok=%v %s", name, ok, why)
+			t.Fatalf("%s should pass through in the default mode: ok=%v %s", name, ok, why)
 		}
 		if !json.Valid([]byte(in)) {
-			t.Fatalf("%s: 前提不成立，encoding/json 也拒绝它", name)
+			t.Fatalf("%s: premise does not hold, encoding/json rejects it too", name)
 		}
 	}
 }
 
-// 输入在序列中间结束：Finish 必须判定不支持，而不是把半个字符吐出去。
+// Input ending in the middle of a sequence: Finish must bail rather than emit half a character.
 func TestUTF8TruncatedAtEOF(t *testing.T) {
 	tr := NewTransformer(BaseProtocol{})
 	tr.SetValidateUTF8(true)
@@ -94,11 +94,11 @@ func TestUTF8TruncatedAtEOF(t *testing.T) {
 	tr.Out()
 	tr.Finish()
 	if u, _ := tr.Unsupported(); !u {
-		t.Fatal("序列中间结束的输入被放行了")
+		t.Fatal("input ending in the middle of a sequence was passed")
 	}
 }
 
-// 随机字节流：开启校验时的判定必须与 utf8.Valid 完全一致，且与分块无关。
+// Random byte streams: with validation on the verdict must match utf8.Valid exactly, independent of chunking.
 func TestUTF8MatchesStdlib(t *testing.T) {
 	r := rand.New(rand.NewSource(11))
 	alphabet := []byte{'a', 'z', 0x80, 0x8F, 0xA0, 0xBF, 0xC0, 0xC2, 0xDF, 0xE0, 0xE1, 0xED, 0xEF, 0xF0, 0xF1, 0xF4, 0xF5, 0xFF, 0x9F, 0x90}
@@ -121,34 +121,34 @@ func TestUTF8MatchesStdlib(t *testing.T) {
 			tr.SetValidateUTF8(true)
 			got, ok, why := feedAll(tr, in, cs)
 			if ok != want {
-				t.Fatalf("%q chunk=%d: 判定 %v，utf8.Valid=%v (%s)", b, cs, ok, want, why)
+				t.Fatalf("%q chunk=%d: verdict %v, utf8.Valid=%v (%s)", b, cs, ok, want, why)
 			}
 			if ok && got != in {
-				t.Fatalf("%q: 输出被改动", b)
+				t.Fatalf("%q: output was modified", b)
 			}
 		}
 	}
 }
 
-// 重复 key 策略：First 只派发第一个；Bail 判定不支持；默认照常派发。
+// Duplicate key policies: First dispatches only the first; Bail bails; the default dispatches as usual.
 func TestDupKeysPolicy(t *testing.T) {
 	enterAll := &dupProto{}
 	cases := []struct {
 		name string
 		in   string
 		pol  DupKeys
-		want string // "" = 期望不支持
+		want string // "" = expect a bail
 	}{
-		{"默认透传", `{"a":1,"a":2}`, DupKeysPass, `{"a":1,"a":2}`},
-		{"First 顶层", `{"a":1,"a":2,"b":3}`, DupKeysFirst, `{"a":1,"b":3}`},
-		{"First 末尾", `{"b":3,"a":1,"a":2}`, DupKeysFirst, `{"b":3,"a":1}`},
-		{"First 三次", `{"a":1,"a":{"x":[1]},"a":"s"}`, DupKeysFirst, `{"a":1}`},
-		{"First 带空白", "{ \"a\" : 1 , \"a\" : 2 }", DupKeysFirst, "{ \"a\" : 1 }"},
-		{"First 只查派发帧", `{"a":1,"a":2,"o":{"c":1,"c":2}}`, DupKeysFirst, `{"a":1,"o":{"c":1}}`},
-		{"First 转义同名", `{"a":1,"a":2}`, DupKeysFirst, `{"a":1}`},
+		{"default passthrough", `{"a":1,"a":2}`, DupKeysPass, `{"a":1,"a":2}`},
+		{"First top level", `{"a":1,"a":2,"b":3}`, DupKeysFirst, `{"a":1,"b":3}`},
+		{"First at the end", `{"b":3,"a":1,"a":2}`, DupKeysFirst, `{"b":3,"a":1}`},
+		{"First three times", `{"a":1,"a":{"x":[1]},"a":"s"}`, DupKeysFirst, `{"a":1}`},
+		{"First with whitespace", "{ \"a\" : 1 , \"a\" : 2 }", DupKeysFirst, "{ \"a\" : 1 }"},
+		{"First only in dispatch frames", `{"a":1,"a":2,"o":{"c":1,"c":2}}`, DupKeysFirst, `{"a":1,"o":{"c":1}}`},
+		{"First same key escaped", `{"a":1,"a":2}`, DupKeysFirst, `{"a":1}`},
 		{"Bail", `{"a":1,"a":2}`, DupKeysBail, ""},
-		{"Bail 深层", `{"o":{"c":1,"c":2}}`, DupKeysBail, ""},
-		{"Bail 无重复", `{"a":1,"b":{"a":1}}`, DupKeysBail, `{"a":1,"b":{"a":1}}`},
+		{"Bail deep", `{"o":{"c":1,"c":2}}`, DupKeysBail, ""},
+		{"Bail without duplicates", `{"a":1,"b":{"a":1}}`, DupKeysBail, `{"a":1,"b":{"a":1}}`},
 	}
 	for _, c := range cases {
 		for _, cs := range chunkSizes(len(c.in)) {
@@ -157,10 +157,10 @@ func TestDupKeysPolicy(t *testing.T) {
 			got, ok, why := feedAll(tr, c.in, cs)
 			if c.want == "" {
 				if ok {
-					t.Fatalf("%s chunk=%d: 应判定不支持，却输出 %q", c.name, cs, got)
+					t.Fatalf("%s chunk=%d: should bail, but produced %q", c.name, cs, got)
 				}
 				if tr.Err().Code != ErrDuplicateKey {
-					t.Fatalf("%s: 原因不对: %s", c.name, why)
+					t.Fatalf("%s: wrong reason: %s", c.name, why)
 				}
 				continue
 			}
@@ -169,20 +169,20 @@ func TestDupKeysPolicy(t *testing.T) {
 			}
 		}
 	}
-	// 兼容：DupKeyBail 字段等价于 DupKeysBail
+	// compatibility: the DupKeyBail field is equivalent to DupKeysBail
 	tr := NewTransformer(enterAll)
 	tr.DupKeyBail = true
 	if _, ok, _ := feedAll(tr, `{"a":1,"a":2}`, 3); ok {
-		t.Fatal("DupKeyBail 字段失效")
+		t.Fatal("the DupKeyBail field no longer works")
 	}
 }
 
-// dupProto 对每个对象值都 Enter（让深层也成为派发帧）。
+// dupProto Enters every object value (so deeper levels become dispatch frames too).
 type dupProto struct{ BaseProtocol }
 
 func (dupProto) OnKey(t *Transformer) Action { return Enter().Lenient() }
 
-// First 策略与 Capture 改写组合：只有第一个被改写，后面的同名 key 被丢弃（gjson 取首个的语义）。
+// The First policy combined with a Capture rewrite: only the first is rewritten, later occurrences of the key are dropped (gjson first-wins semantics).
 func TestDupKeysFirstWithCapture(t *testing.T) {
 	in := `{"model":"a","x":1,"model":"b"}`
 	for _, cs := range chunkSizes(len(in)) {
@@ -196,7 +196,7 @@ func TestDupKeysFirstWithCapture(t *testing.T) {
 	}
 }
 
-// Defer 回放不会把自己当成重复 key。
+// A Defer replay does not count itself as a duplicate key.
 func TestDupKeysFirstWithDefer(t *testing.T) {
 	in := `{"a":1,"b":2,"a":3}`
 	for _, cs := range chunkSizes(len(in)) {
@@ -222,13 +222,13 @@ func (p *deferA) OnKey(t *Transformer) Action {
 }
 
 func (p *deferA) OnLeave(t *Transformer) {
-	if t.Depth() == 0 { // 根闭合：路径仍指向容器本身
+	if t.Depth() == 0 { // root closing: the path still points at the container itself
 		p.released = true
 		t.ReleaseNow()
 	}
 }
 
-// 根形状：默认只接受对象；RootArray 只接受数组；RootAny 两者都接受。数组根按下标派发。
+// Root shapes: the default accepts objects only; RootArray arrays only; RootAny both. Array roots dispatch by index.
 func TestRootKind(t *testing.T) {
 	arr := `[1,"s",{"a":[true,null]},[ ],{ }]`
 	obj := `{"a":1}`
@@ -239,19 +239,19 @@ func TestRootKind(t *testing.T) {
 		root RootKind
 		ok   bool
 	}{
-		{"默认拒绝数组", arr, RootObject, false},
-		{"默认接受对象", obj, RootObject, true},
-		{"RootArray 接受数组", arr, RootArray, true},
-		{"RootArray 拒绝对象", obj, RootArray, false},
-		{"RootAny 数组", arr, RootAny, true},
-		{"RootAny 对象", obj, RootAny, true},
-		{"RootAny 标量", `1`, RootAny, false},
-		{"RootAny 字符串", `"x"`, RootAny, false},
-		{"数组根带空白", ws, RootAny, true},
-		{"空数组根", `[]`, RootArray, true},
-		{"数组根后多余内容", `[1] 2`, RootArray, false},
-		{"数组根末尾逗号", `[1,]`, RootArray, false},
-		{"数组根未闭合", `[1`, RootArray, false},
+		{"default rejects an array", arr, RootObject, false},
+		{"default accepts an object", obj, RootObject, true},
+		{"RootArray accepts an array", arr, RootArray, true},
+		{"RootArray rejects an object", obj, RootArray, false},
+		{"RootAny array", arr, RootAny, true},
+		{"RootAny object", obj, RootAny, true},
+		{"RootAny scalar", `1`, RootAny, false},
+		{"RootAny string", `"x"`, RootAny, false},
+		{"array root with whitespace", ws, RootAny, true},
+		{"empty array root", `[]`, RootArray, true},
+		{"data after an array root", `[1] 2`, RootArray, false},
+		{"trailing comma in an array root", `[1,]`, RootArray, false},
+		{"unclosed array root", `[1`, RootArray, false},
 	}
 	for _, c := range cases {
 		for _, cs := range chunkSizes(len(c.in)) {
@@ -262,16 +262,16 @@ func TestRootKind(t *testing.T) {
 				t.Fatalf("%s chunk=%d: ok=%v (%s) got %q", c.name, cs, ok, why, got)
 			}
 			if ok && got != c.in {
-				t.Fatalf("%s chunk=%d: 透传应逐字节一致\n got %q\nwant %q", c.name, cs, got, c.in)
+				t.Fatalf("%s chunk=%d: passthrough should be byte-identical\n got %q\nwant %q", c.name, cs, got, c.in)
 			}
 		}
 	}
 }
 
-// 数组根的元素经 OnElem 派发：下标可读，Enter 进对象元素改写内部 key，Skip 整个元素时分隔符正确。
+// Elements of an array root dispatch through OnElem: the index is readable, Enter into object elements rewrites inner keys, and Skipping a whole element keeps the separators right.
 func TestRootArrayDispatch(t *testing.T) {
 	in := `[{"model":"a","x":1},{"model":"b"},3,{"model":"c","y":[1]}]`
-	want := `[{"model":"R","x":1},{"model":"R"},{"model":"R","y":[1]}]` // 下标 2 的标量被 Skip
+	want := `[{"model":"R","x":1},{"model":"R"},{"model":"R","y":[1]}]` // the scalar at index 2 is Skipped
 	for _, cs := range chunkSizes(len(in)) {
 		p := &rootArrProto{}
 		tr := NewTransformer(p)
@@ -281,7 +281,7 @@ func TestRootArrayDispatch(t *testing.T) {
 			t.Fatalf("chunk=%d: ok=%v %s\n got %q\nwant %q", cs, ok, why, got, want)
 		}
 		if p.seen != "0,1,2,3" {
-			t.Fatalf("chunk=%d: OnElem 下标序列 %q", cs, p.seen)
+			t.Fatalf("chunk=%d: OnElem index sequence %q", cs, p.seen)
 		}
 	}
 }
@@ -317,7 +317,7 @@ func (p *rootArrProto) OnValue(t *Transformer, raw []byte) {
 	t.W().Raw([]byte(`"R"`))
 }
 
-// 区域（Pass / Skip / Capture）里的文法与派发帧一视同仁：随机结构垃圾的判定必须与 encoding/json 完全一致。
+// Grammar inside regions (Pass / Skip / Capture) is treated like dispatch frames: the verdict on random structural garbage must match encoding/json exactly.
 func TestRegionGrammarMatchesStdlib(t *testing.T) {
 	r := rand.New(rand.NewSource(5))
 	toks := []string{"{", "}", "[", "]", ",", ":", `"k"`, `"v"`, "1", "-2.5e3", "true", "null", " ", "\n", "tru", "01"}
@@ -330,10 +330,10 @@ func TestRegionGrammarMatchesStdlib(t *testing.T) {
 		name string
 		fn   func() *Transformer
 	}{
-		{"Pass 区域", func() *Transformer { return NewTransformer(BaseProtocol{}) }},
-		{"派发帧", func() *Transformer { return NewTransformer(enterAll) }},
-		{"Skip 区域", func() *Transformer { return NewKeyProbeTransformer(skipA) }},
-		{"Capture 区域", func() *Transformer { return NewKeyProbeTransformer(capA) }},
+		{"Pass region", func() *Transformer { return NewTransformer(BaseProtocol{}) }},
+		{"dispatch frame", func() *Transformer { return NewTransformer(enterAll) }},
+		{"Skip region", func() *Transformer { return NewKeyProbeTransformer(skipA) }},
+		{"Capture region", func() *Transformer { return NewKeyProbeTransformer(capA) }},
 	}
 	seen := map[string]bool{}
 	for i := 0; i < 20000; i++ {
@@ -343,7 +343,7 @@ func TestRegionGrammarMatchesStdlib(t *testing.T) {
 			sb.WriteString(toks[r.Intn(len(toks))])
 		}
 		in := `{"a":` + sb.String() + `}`
-		if r.Intn(4) == 0 { // 也测“垃圾在第二个字段”的位置
+		if r.Intn(4) == 0 { // also test garbage in the second field
 			in = `{"a":[1],"b":` + sb.String() + `}`
 		}
 		if seen[in] {
@@ -355,17 +355,17 @@ func TestRegionGrammarMatchesStdlib(t *testing.T) {
 			for _, cs := range []int{1, 3, len(in)} {
 				got, ok, why := feedAll(m.fn(), in, cs)
 				if ok != want {
-					t.Fatalf("%s chunk=%d: %q 判定 %v (%s)，encoding/json=%v", m.name, cs, in, ok, why, want)
+					t.Fatalf("%s chunk=%d: %q verdict %v (%s), encoding/json=%v", m.name, cs, in, ok, why, want)
 				}
-				if ok && m.name != "Skip 区域" && got != in {
-					t.Fatalf("%s: %q 输出被改动: %q", m.name, in, got)
+				if ok && m.name != "Skip region" && got != in {
+					t.Fatalf("%s: %q output was modified: %q", m.name, in, got)
 				}
 			}
 		}
 	}
 }
 
-// 区域里的典型错误：每一条 encoding/json 都拒绝，流式也必须拒绝——不分它落在 Pass 还是 Skip 区域。
+// Typical errors inside regions: encoding/json rejects each of them and so must streaming, whether it lands in a Pass or a Skip region.
 func TestRegionGrammarCases(t *testing.T) {
 	bad := []string{
 		`{"a":{]}`, `{"a":[}]}`, `{"a":{{}}}`, `{"a":{"x"}}`, `{"a":{"x":}}`, `{"a":{"x" 1}}`,
@@ -382,14 +382,14 @@ func TestRegionGrammarCases(t *testing.T) {
 		OnKey: func(t *Transformer, k string, raw []byte) ([]byte, bool) { return nil, false }}
 	for _, in := range bad {
 		if json.Valid([]byte(in)) {
-			t.Fatalf("前提不成立，encoding/json 接受 %q", in)
+			t.Fatalf("premise does not hold, encoding/json accepts %q", in)
 		}
 		for _, cs := range chunkSizes(len(in)) {
 			if _, ok, _ := feedAll(NewTransformer(BaseProtocol{}), in, cs); ok {
-				t.Fatalf("Pass 区域放行了 %q (chunk=%d)", in, cs)
+				t.Fatalf("Pass region passed %q (chunk=%d)", in, cs)
 			}
 			if _, ok, _ := feedAll(NewKeyProbeTransformer(skipA), in, cs); ok {
-				t.Fatalf("Skip 区域放行了 %q (chunk=%d)", in, cs)
+				t.Fatalf("Skip region passed %q (chunk=%d)", in, cs)
 			}
 		}
 	}
@@ -397,7 +397,7 @@ func TestRegionGrammarCases(t *testing.T) {
 		for _, cs := range chunkSizes(len(in)) {
 			got, ok, why := feedAll(NewTransformer(BaseProtocol{}), in, cs)
 			if !ok || got != in {
-				t.Fatalf("合法输入被拒绝或改动 %q chunk=%d: %v %s %q", in, cs, ok, why, got)
+				t.Fatalf("valid input rejected or modified %q chunk=%d: %v %s %q", in, cs, ok, why, got)
 			}
 		}
 	}

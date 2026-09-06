@@ -7,15 +7,15 @@ import (
 	"strconv"
 )
 
-// OpenAI → Gemini 的流式转换协议。
+// Streaming conversion protocol OpenAI → Gemini.
 //
-// 逐行对照官方 gemini.go buildGeminiChatRequest。结构差异比 Claude 大：
-//   - messages → contents，assistant → model，system 整条提到顶层 system_instruction；
-//   - 每条 content 变成 parts：字符串 → [{text}]，image_url → inlineData（data: URL 拆前缀后主体直通）；
-//   - 一堆顶层标量归并进 generationConfig，在 Tail 一次写出；
-//   - 请求路径依赖 model 与 stream（集成层在放行请求头前施加）。
+// Derived line by line from the buffered gemini.go buildGeminiChatRequest. The structural differences are larger than for Claude:
+//   - messages → contents, assistant → model, and system messages move to the top-level system_instruction as a whole;
+//   - each content becomes parts: a string → [{text}], image_url → inlineData (data: URLs are split after the prefix, the payload streams through);
+//   - a set of top-level scalars is folded into generationConfig and written once in Tail;
+//   - the request path depends on model and stream (applied by the integration layer before the headers are released).
 //
-// 官方对 http(s) 图片会异步抓取再内联，流式无法复刻——遇到就回落。
+// The buffered path fetches http(s) images asynchronously and inlines them; streaming cannot reproduce that and falls back.
 
 type GeminiSafetySetting struct {
 	Category  string `json:"category"`
@@ -23,17 +23,17 @@ type GeminiSafetySetting struct {
 }
 
 type GeminiOptions struct {
-	// MapModel 复刻官方 mapModel：model 为空或映射结果为空时返回错误。
+	// MapModel reproduces the buffered mapModel: an error when model is empty or maps to empty.
 	MapModel func(model string) (string, error)
-	// ThinkingModel 复刻 geminiThinkingModels[映射后的 model]。
+	// ThinkingModel reproduces geminiThinkingModels[mapped model].
 	ThinkingModel func(mapped string) bool
-	// ThinkingBudget 对应配置 geminiThinkingBudget。
+	// ThinkingBudget mirrors the setting geminiThinkingBudget.
 	ThinkingBudget int64
-	// SafetySettings 对应配置 geminiSafetySetting（官方按 map 遍历，顺序本就不定）。
+	// SafetySettings mirrors the setting geminiSafetySetting (the buffered path iterates a map, so the order was never fixed).
 	SafetySettings []GeminiSafetySetting
 }
 
-// 与官方逐字段对齐的输出结构（只用于 Tail / 已 Capture 的小值）
+// output structs aligned field by field with the buffered path (only for Tail / small Captured values)
 type geminiGenerationConfig struct {
 	Temperature        float64               `json:"temperature,omitempty"`
 	TopP               float64               `json:"topP,omitempty"`
@@ -101,11 +101,11 @@ type geminiProto struct {
 	messagesSeen bool
 	inputMsgs    int
 	sysSeen      bool
-	sysParts     []byte // 已序列化的 parts 数组
+	sysParts     []byte // serialized parts array
 	m            gemMsg
 }
 
-// NewGemini 构造 OpenAI → Gemini 转换器。
+// NewGemini builds the OpenAI → Gemini transformer.
 func NewGemini(opt GeminiOptions) *Transformer {
 	if opt.MapModel == nil {
 		opt.MapModel = func(m string) (string, error) {
@@ -128,7 +128,7 @@ func (p *geminiProto) Prelude() Prelude {
 	return Prelude{Model: p.model, ModelSeen: p.modelSeen, Stream: p.stream, StreamSeen: p.streamSeen}
 }
 
-// ---- 派发 ----
+// ---- dispatch ----
 
 func (p *geminiProto) OnKey(t *Transformer) Action {
 	switch t.Depth() {
@@ -145,9 +145,9 @@ func (p *geminiProto) OnKey(t *Transformer) Action {
 		case "modalities":
 			return Capture(4 << 10)
 		case "tools":
-			return Probe() // 逐元素流式
+			return Probe() // stream element by element
 		}
-		return Skip() // stop / seed / n / max_completion_tokens / tool_choice …：官方不读
+		return Skip() // stop / seed / n / max_completion_tokens / tool_choice ...: not read by the buffered path
 	case 3:
 		m := &p.m
 		switch t.Last() {
@@ -159,11 +159,11 @@ func (p *geminiProto) OnKey(t *Transformer) Action {
 			}
 			m.contentSeen = true
 			if m.role == "system" {
-				return Capture(systemCap) // 整体提到 system_instruction；上限对齐官方的请求体上限
+				return Capture(systemCap) // moves to system_instruction as a whole; the cap matches the buffered body limit
 			}
 			return Probe()
 		}
-		return Skip() // tool_calls / name / …：官方不读
+		return Skip() // tool_calls / name / ...: not read by the buffered path
 	case 5:
 		pt := &p.m.part
 		if pt.dead {
@@ -197,7 +197,7 @@ func (p *geminiProto) OnKey(t *Transformer) Action {
 		}
 		return Skip()
 	}
-	return Bail("意外的路径: " + t.PathString())
+	return Bail("unexpected path: " + t.PathString())
 }
 
 func (p *geminiProto) OnElem(t *Transformer) Action {
@@ -205,12 +205,12 @@ func (p *geminiProto) OnElem(t *Transformer) Action {
 	case 2, 4:
 		return Probe()
 	}
-	return Bail("意外的数组: " + t.PathString())
+	return Bail("unexpected array: " + t.PathString())
 }
 
 func (p *geminiProto) OnStart(t *Transformer, kind ValueKind) Action {
 	w := t.W()
-	if t.Depth() == 1 && t.Last() == "tools" { // tools → tools:[{function_declarations:[...]}]（官方 Tools != nil 即物化，空数组也输出）
+	if t.Depth() == 1 && t.Last() == "tools" { // tools → tools:[{function_declarations:[...]}] (materialized whenever buffered Tools != nil, an empty array included)
 		switch kind {
 		case KindNull:
 			return Skip()
@@ -218,35 +218,35 @@ func (p *geminiProto) OnStart(t *Transformer, kind ValueKind) Action {
 			w.PushArr("tools")
 			w.PushObj("")
 			w.PushArr("function_declarations")
-			return Enter().Flat().Via(&p.tools) // 内部交给子 hook；闭合回到这里 Pop
+			return Enter().Flat().Via(&p.tools) // the inside goes to the sub-hook; on close control returns here to Pop
 		}
-		return Bail("tools 不是数组，官方 struct 解析失败")
+		return Bail("tools is not an array, the buffered struct decoding fails")
 	}
 	switch t.Depth() {
-	case 1: // messages → contents（官方 make(…,0)：全是 system 时也输出 []）
+	case 1: // messages → contents (buffered make(...,0): [] even when every message is system)
 		if kind != KindArray {
-			return Bail("messages 不是数组")
+			return Bail("messages is not an array")
 		}
 		return Enter().As("contents")
 	case 2:
 		if kind != KindObject {
-			return Bail("message 不是对象")
+			return Bail("message is not an object")
 		}
 		p.m = gemMsg{}
 		p.inputMsgs++
-		return Enter().Lazy() // system 消息不产生元素
-	case 3: // content（非 system，role 已知）
+		return Enter().Lazy() // system messages produce no element
+	case 3: // content (non-system, role known)
 		switch kind {
 		case KindString:
 			p.writeRole(t)
 			p.m.partsWritten = true
-			return Prefix(1) // 官方 Text 带 omitempty：空串是 [{}]，得先看一眼
+			return Prefix(1) // buffered Text has omitempty: an empty string is [{}], so peek first
 		case KindArray:
 			p.writeRole(t)
 			p.m.partsWritten = true
 			return Enter().As("parts")
 		}
-		return Skip() // 对象 / 标量 / null：ParseContent 得空 → "parts":[]
+		return Skip() // object / scalar / null: ParseContent yields empty → "parts":[]
 	case 4:
 		if kind != KindObject {
 			return Skip()
@@ -261,7 +261,7 @@ func (p *geminiProto) OnStart(t *Transformer, kind ValueKind) Action {
 				pt.dead = true
 				return Skip()
 			}
-			return Prefix(1) // 空串 → {}（Text omitempty）
+			return Prefix(1) // empty string → {} (Text omitempty)
 		case "image_url":
 			if kind != KindObject {
 				pt.dead = true
@@ -271,10 +271,10 @@ func (p *geminiProto) OnStart(t *Transformer, kind ValueKind) Action {
 		}
 	}
 	_ = w
-	return Bail("意外的 Probe: " + t.PathString())
+	return Bail("unexpected Probe: " + t.PathString())
 }
 
-// ---- 值到齐 ----
+// ---- values complete ----
 
 func (p *geminiProto) OnValue(t *Transformer, raw []byte) {
 	switch t.Depth() {
@@ -293,7 +293,7 @@ func (p *geminiProto) topValue(t *Transformer, raw []byte) {
 	case "model":
 		s, ok := jsonUnquote(raw)
 		if !ok {
-			t.Bail("model 不是字符串")
+			t.Bail("model is not a string")
 			return
 		}
 		p.model, p.modelSeen = s, true
@@ -307,7 +307,7 @@ func (p *geminiProto) topValue(t *Transformer, raw []byte) {
 			}
 		case "false", "null":
 		default:
-			t.Bail(t.Last() + " 不是布尔")
+			t.Bail(t.Last() + " is not a boolean")
 			return
 		}
 		if t.Last() == "stream" {
@@ -319,7 +319,7 @@ func (p *geminiProto) topValue(t *Transformer, raw []byte) {
 		}
 		f, err := strconv.ParseFloat(string(raw), 64)
 		if err != nil || !isNumLiteral(raw) {
-			t.Bail(t.Last() + " 不是数字")
+			t.Bail(t.Last() + " is not a number")
 			return
 		}
 		switch t.Last() {
@@ -328,7 +328,7 @@ func (p *geminiProto) topValue(t *Transformer, raw []byte) {
 		case "top_p":
 			p.topP = f
 		case "presence_penalty":
-			p.presence = int64(f) // 官方 int64(float64)：截断
+			p.presence = int64(f) // buffered int64(float64): truncation
 		default:
 			p.frequency = int64(f)
 		}
@@ -337,7 +337,7 @@ func (p *geminiProto) topValue(t *Transformer, raw []byte) {
 			return
 		}
 		if !isIntLiteral(raw) {
-			t.Bail("max_tokens 不是整数")
+			t.Bail("max_tokens is not an integer")
 			return
 		}
 		p.maxTok = atoi(raw)
@@ -347,7 +347,7 @@ func (p *geminiProto) topValue(t *Transformer, raw []byte) {
 		}
 		var ss []string
 		if err := json.Unmarshal(raw, &ss); err != nil {
-			t.Bail("modalities 不是字符串数组")
+			t.Bail("modalities is not an array of strings")
 			return
 		}
 		p.modalities = ss
@@ -360,14 +360,14 @@ func (p *geminiProto) msgValue(t *Transformer, raw []byte) {
 	case "role":
 		s, ok := jsonUnquote(raw)
 		if !ok {
-			t.Bail("role 不是字符串")
+			t.Bail("role is not a string")
 			return
 		}
 		m.role, m.roleSeen = s, true
 		if len(t.Deferred()) > 0 {
 			t.Release()
 		}
-	case "content": // 只有 system 的 content 会 Capture 到这里
+	case "content": // only system content is Captured here
 		parts, err := geminiPartsFromContent(raw)
 		if err != nil {
 			t.Bail(err.Error())
@@ -396,16 +396,16 @@ func (p *geminiProto) partValue(t *Transformer, raw []byte) {
 			t.Release()
 		}
 	default:
-		pt.dead = true // input_audio / file / 未知：官方 gemini 分支跳过
+		pt.dead = true // input_audio / file / unknown: skipped by the buffered gemini branch
 		t.DropDeferred()
 	}
 }
 
-// OnPrefix：image_url.url 的前缀窗口。复刻官方 handleContentTypeImageUrl + baseStr2InlineData。
+// OnPrefix: the prefix window of image_url.url. Reproduces the buffered handleContentTypeImageUrl + baseStr2InlineData.
 func (p *geminiProto) OnPrefix(t *Transformer, raw []byte, complete bool) (Action, int) {
 	w := t.W()
 	switch t.Depth() {
-	case 3: // 字符串 content → parts:[{text}]；空串 → [{}]
+	case 3: // string content → parts:[{text}]; empty string → [{}]
 		if complete && len(raw) == 0 {
 			w.Key("parts")
 			w.RawString(`[{}]`)
@@ -423,13 +423,13 @@ func (p *geminiProto) OnPrefix(t *Transformer, raw []byte, complete bool) (Actio
 	}
 	dec, off := unescapePrefix(raw)
 	if isHTTPURLPrefix(dec) {
-		return Bail("http(s) 图片官方会异步抓取后内联，流式无法复刻"), 0
+		return Bail("the buffered path fetches http(s) images asynchronously and inlines them, not reproduced by streaming"), 0
 	}
 	if !bytes.HasPrefix(dec, lit1) {
 		if !complete {
-			return Bail("非 data: 的图片串超出前缀窗口"), 0
+			return Bail("non-data: image string exceeds the prefix window"), 0
 		}
-		// 官方 baseStr2InlineData：记错误日志，给一个空的 inlineData
+		// buffered baseStr2InlineData: logs an error and yields an empty inlineData
 		w.Key("inlineData")
 		w.RawString(`{"mimeType":"","data":""}`)
 		return Skip(), 0
@@ -437,23 +437,23 @@ func (p *geminiProto) OnPrefix(t *Transformer, raw []byte, complete bool) (Actio
 	semi := bytes.IndexByte(dec, ';')
 	if semi < 0 {
 		if !complete {
-			return Bail("data URL 头超出前缀窗口"), 0
+			return Bail("data URL header exceeds the prefix window"), 0
 		}
-		w.Open() // 官方：拆分失败返回 nil → 空 part {}
+		w.Open() // buffered path: a failed split returns nil → empty part {}
 		return Skip(), 0
 	}
 	mime := string(dec[5:semi])
 	rest := dec[semi+1:]
 	resumeDec := semi + 1
 	if !complete && len(rest) < len("base64,") {
-		return Bail("data URL 头在窗口边界被截断"), 0
+		return Bail("data URL header cut at the window boundary"), 0
 	}
 	if bytes.HasPrefix(rest, lit4) {
 		resumeDec += len("base64,")
 	}
 	resume := off[resumeDec]
 	if !complete && resume >= len(raw) {
-		return Bail("data URL 数据段在窗口边界被截断"), 0
+		return Bail("data URL payload cut at the window boundary"), 0
 	}
 	w.Key("inlineData")
 	w.RawString(`{"mimeType":`)
@@ -462,12 +462,12 @@ func (p *geminiProto) OnPrefix(t *Transformer, raw []byte, complete bool) (Actio
 	return Pass().Wrap(nil, lit3), resume
 }
 
-// ---- 容器闭合 ----
+// ---- containers closing ----
 
 func (p *geminiProto) OnLeave(t *Transformer) {
 	w := t.W()
 	if t.Depth() == 1 && t.Last() == "tools" {
-		w.Open() // 空 tools 也物化 [{"function_declarations":[]}]
+		w.Open() // empty tools is materialized as [{"function_declarations":[]}] as well
 		w.Pop()
 		w.Pop()
 		w.Pop()
@@ -481,7 +481,7 @@ func (p *geminiProto) OnLeave(t *Transformer) {
 		}
 	case 2:
 		p.finishMessage(t)
-	case 3: // parts 数组：官方总是物化
+	case 3: // parts array: always materialized by the buffered path
 		w.Open()
 	case 4:
 		if p.m.part.dead || !p.m.part.typSeen {
@@ -489,7 +489,7 @@ func (p *geminiProto) OnLeave(t *Transformer) {
 		}
 	case 5:
 		if !p.m.part.urlSeen {
-			t.Bail("image_url.url 缺失，官方会 panic")
+			t.Bail("image_url.url missing, the buffered path panics")
 		}
 	}
 }
@@ -501,7 +501,7 @@ func (p *geminiProto) writeRole(t *Transformer) {
 	}
 	m.roleWritten = true
 	w := t.W()
-	w.Open() // 即便 role 为空（omitempty）也要有这个元素
+	w.Open() // the element must exist even when role is empty (omitempty)
 	role := m.role
 	if role == "assistant" {
 		role = "model"
@@ -544,7 +544,7 @@ func (p *geminiProto) finishMessage(t *Transformer) {
 	}
 }
 
-// ---- 收尾 ----
+// ---- tail ----
 
 func (p *geminiProto) Tail(t *Transformer) {
 	w := t.W()
@@ -585,11 +585,11 @@ func (p *geminiProto) Tail(t *Transformer) {
 	w.Raw(b)
 }
 
-// geminiPartsFromContent 复刻 ParseContent + gemini 的 part 映射（用于已 Capture 的 system content）。
+// geminiPartsFromContent reproduces ParseContent + the gemini part mapping (for Captured system content).
 func geminiPartsFromContent(raw []byte) ([]byte, error) {
 	var v interface{}
 	if err := json.Unmarshal(raw, &v); err != nil {
-		return nil, errors.New("system content 非法")
+		return nil, errors.New("invalid system content")
 	}
 	parts := make([]geminiPart, 0)
 	switch c := v.(type) {
@@ -613,11 +613,11 @@ func geminiPartsFromContent(raw []byte) ([]byte, error) {
 				}
 				u, ok := sub["url"].(string)
 				if !ok {
-					return nil, errors.New("image_url.url 缺失，官方会 panic")
+					return nil, errors.New("image_url.url missing, the buffered path panics")
 				}
 				if isHTTPURLPrefix([]byte(u)) {
-					// 官方只对 contents 里的 http 图片做抓取（countImageUrl 不扫 system_instruction），
-					// system 里的原样保留为 {mimeType:"", data:url}
+					// the buffered path only fetches http images inside contents (countImageUrl does not scan system_instruction);
+					// inside system they stay as {mimeType:"", data:url}
 					parts = append(parts, geminiPart{InlineData: &geminiInlineData{Data: u}})
 					continue
 				}
@@ -626,17 +626,17 @@ func geminiPartsFromContent(raw []byte) ([]byte, error) {
 				sub, ok := m["input_audio"].(map[string]interface{})
 				if ok {
 					if _, ok := sub["data"].(string); !ok {
-						return nil, errors.New("input_audio.data 缺失，官方会 panic")
+						return nil, errors.New("input_audio.data missing, the buffered path panics")
 					}
 					if _, ok := sub["format"].(string); !ok {
-						return nil, errors.New("input_audio.format 缺失，官方会 panic")
+						return nil, errors.New("input_audio.format missing, the buffered path panics")
 					}
 				}
 			case "file":
 				sub, ok := m["file"].(map[string]interface{})
 				if ok {
 					if _, ok := sub["file_id"].(string); !ok {
-						return nil, errors.New("file.file_id 缺失，官方会 panic")
+						return nil, errors.New("file.file_id missing, the buffered path panics")
 					}
 				}
 			}
@@ -645,7 +645,7 @@ func geminiPartsFromContent(raw []byte) ([]byte, error) {
 	return json.Marshal(parts)
 }
 
-// inlineDataFromDataURL 复刻 baseStr2InlineData：拆不开返回 nil（→ 空 part）。
+// inlineDataFromDataURL reproduces baseStr2InlineData: nil when the URL cannot be split (→ empty part).
 func inlineDataFromDataURL(s string) *geminiInlineData {
 	if len(s) >= 5 && s[:5] == "data:" {
 		semi := -1
@@ -668,7 +668,7 @@ func inlineDataFromDataURL(s string) *geminiInlineData {
 	return &geminiInlineData{}
 }
 
-// isHTTPURLPrefix 复刻 isUrl：url.Parse 后 scheme 为 http / https（Parse 会把 scheme 转小写）。
+// isHTTPURLPrefix reproduces isUrl: scheme http / https after url.Parse (Parse lowercases the scheme).
 func isHTTPURLPrefix(b []byte) bool {
 	l := make([]byte, 0, 8)
 	for i := 0; i < len(b) && i < 8; i++ {

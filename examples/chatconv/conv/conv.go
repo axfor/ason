@@ -1,21 +1,21 @@
-// Package conv 是一个"聊天请求转换"示例协议：把一种常见的聊天请求形状流式转换成另一种。
-// 它刻意用到了引擎的每一条路径——Capture / Defer 回放 / Prefix 拆 data URL / Via 子 hook /
-// Lazy 层 / 自建输出层 / Tail 补字段——是引擎场景测试的载体，也是写自己协议时的参照。
+// Package conv is an example "chat request conversion" protocol: it converts one common chat request shape into another, streaming.
+// It deliberately exercises every path of the engine (Capture / Defer replay / Prefix splitting a data URL / a Via sub-hook /
+// Lazy levels / self-built output levels / fields added in Tail): it carries the engine scenario tests and serves as a reference for writing your own protocol.
 //
-// 输入（源形状）                                   输出（目标形状）
+// Input (source shape)                              Output (target shape)
 //
-//	model                                          model（经 MapModel）
-//	messages[].role == "system" 的 content          system：所有 system 文本用 "\n" 连接（没有则省略）
-//	messages[].content 字符串                        content:[{"type":"text","text":…}]
-//	messages[].content 数组：text 部分              {"type":"text","text":…}
-//	                        image_url 的 data URL   {"type":"image","source":{"type":"base64","media_type":…,"data":…}}
-//	max_tokens                                     max_tokens（缺省 1024）
-//	stop                                           stop_sequences（空数组省略；元素必须是字符串）
-//	tools[].function{name,description,parameters}  tools[]{name,description,input_schema}（空 parameters 省略）
-//	其余顶层字段                                     丢弃
+//	model                                          model (through MapModel)
+//	content of messages[].role == "system"         system: every system text joined with "\n" (omitted when there is none)
+//	messages[].content string                      content:[{"type":"text","text":...}]
+//	messages[].content array: text parts           {"type":"text","text":...}
+//	                        image_url data URLs    {"type":"image","source":{"type":"base64","media_type":...,"data":...}}
+//	max_tokens                                     max_tokens (default 1024)
+//	stop                                           stop_sequences (an empty array is omitted; elements must be strings)
+//	tools[].function{name,description,parameters}  tools[]{name,description,input_schema} (empty parameters omitted)
+//	other top-level fields                         dropped
 //
-// 不支持（Bail）：messages 不是数组、消息没有 role、role 不是字符串、content 是 null / 数字 / 对象、
-// stop 元素不是字符串、图片不是 data URL、data URL 头超出 512 字节窗口。
+// Unsupported (Bail): messages not an array, a message without role, a non-string role, content that is null / a number / an object,
+// a non-string stop element, an image that is not a data URL, a data URL header beyond the 512-byte window.
 package conv
 
 import (
@@ -26,19 +26,19 @@ import (
 	"github.com/axfor/ason"
 )
 
-// Options 是协议选项。
+// Options are the protocol options.
 type Options struct {
-	// MapModel 把源 model 映射成目标 model；nil 表示原样。
+	// MapModel maps the source model to the target model; nil keeps it unchanged.
 	MapModel func(string) string
-	// DefaultMaxTokens 缺省 max_tokens。
+	// DefaultMaxTokens is the default max_tokens.
 	DefaultMaxTokens int
 }
 
 const (
-	roleWaitCap = 64 << 10 // content 先于 role 到达时最多暂存这么多
-	systemCap   = 1 << 20  // system 内容整体捕获的上限
-	partWaitCap = 8 << 20  // part 的 type 先于内容到达时最多暂存这么多（图片）
-	urlWindow   = 512      // data URL 头的窗口
+	roleWaitCap = 64 << 10 // how much content to hold when it arrives before role
+	systemCap   = 1 << 20  // cap on system content captured as a whole
+	partWaitCap = 8 << 20  // how much to hold when a part's type arrives after its content (images)
+	urlWindow   = 512      // window for the data URL header
 	smallCap    = 4 << 10  // model / max_tokens / role / type
 )
 
@@ -48,11 +48,11 @@ type proto struct {
 	tools    toolsHook
 	model    string
 	modelOK  bool
-	maxTok   string // 原始数字文本
+	maxTok   string // raw number text
 	system   []string
 	m        msg
-	msgsSeen bool // messages 数组出现过
-	outMsgs  int  // 写出的（非 system）消息数
+	msgsSeen bool // the messages array appeared
+	outMsgs  int  // (non-system) messages written
 }
 
 type msg struct {
@@ -63,7 +63,7 @@ type msg struct {
 	partTypeOK bool
 }
 
-// New 构造转换器。
+// New builds the transformer.
 func New(opt Options) *ason.Transformer {
 	if opt.DefaultMaxTokens == 0 {
 		opt.DefaultMaxTokens = 1024
@@ -77,7 +77,7 @@ func New(opt Options) *ason.Transformer {
 	return tr
 }
 
-// ---- 顶层 ----
+// ---- top level ----
 
 func (p *proto) OnKey(t *ason.Transformer) ason.Action {
 	switch t.Depth() {
@@ -113,10 +113,10 @@ func (p *proto) OnStart(t *ason.Transformer, kind ason.ValueKind) ason.Action {
 		switch t.Last() {
 		case "messages":
 			if kind != ason.KindArray {
-				return ason.Bail("messages 不是数组")
+				return ason.Bail("messages is not an array")
 			}
 			p.msgsSeen = true
-			return ason.Enter().Lazy() // 全是 system 时 Tail 补 "messages":[]
+			return ason.Enter().Lazy() // all system: Tail adds "messages":[]
 		case "stop":
 			switch kind {
 			case ason.KindArray:
@@ -124,7 +124,7 @@ func (p *proto) OnStart(t *ason.Transformer, kind ason.ValueKind) ason.Action {
 			case ason.KindNull:
 				return ason.Skip()
 			}
-			return ason.Bail("stop 不是数组")
+			return ason.Bail("stop is not an array")
 		case "tools":
 			switch kind {
 			case ason.KindArray:
@@ -132,20 +132,20 @@ func (p *proto) OnStart(t *ason.Transformer, kind ason.ValueKind) ason.Action {
 			case ason.KindNull:
 				return ason.Skip()
 			}
-			return ason.Bail("tools 不是数组")
+			return ason.Bail("tools is not an array")
 		}
 	case 2:
 		if t.Key(0) == "stop" {
 			if kind != ason.KindString {
-				return ason.Bail("stop 元素不是字符串")
+				return ason.Bail("stop element is not a string")
 			}
 			return ason.Pass()
 		}
 		if kind != ason.KindObject {
-			return ason.Bail("消息不是对象")
+			return ason.Bail("message is not an object")
 		}
 		p.m = msg{}
-		return ason.Enter().Lazy() // system 消息不产生元素
+		return ason.Enter().Lazy() // system messages produce no element
 	case 3: // content
 		return p.contentStart(t, kind)
 	case 4: // content[j]
@@ -168,15 +168,15 @@ func (p *proto) OnValue(t *ason.Transformer, raw []byte) {
 		case "model":
 			s, ok := ason.JSONUnquote(raw)
 			if !ok {
-				t.Bail("model 不是字符串")
+				t.Bail("model is not a string")
 				return
 			}
 			p.model, p.modelOK = s, true
 			w.Key("model")
-			w.JSONString(p.opt.MapModel(s)) // 原位写出映射后的 model
+			w.JSONString(p.opt.MapModel(s)) // write the mapped model in place
 		case "max_tokens":
 			if !ason.IsIntLiteral(raw) {
-				t.Bail("max_tokens 不是整数")
+				t.Bail("max_tokens is not an integer")
 				return
 			}
 			p.maxTok = string(raw)
@@ -186,20 +186,20 @@ func (p *proto) OnValue(t *ason.Transformer, raw []byte) {
 		case "role":
 			s, ok := ason.JSONUnquote(raw)
 			if !ok {
-				t.Bail("role 不是字符串")
+				t.Bail("role is not a string")
 				return
 			}
 			p.m.role, p.m.roleSeen = s, true
 			p.m.system = s == "system"
 			if p.m.system {
-				t.Release() // 让暂存的 content 按 system 规则重新派发（进 system 缓冲）
+				t.Release() // re-dispatch the held content under the system rule (into the system buffer)
 				return
 			}
 			p.outMsgs++
 			w.Key("role")
 			w.Raw(raw)
-			t.Release() // 暂存的 content 现在知道怎么写了
-		case "content": // system 的 content 整体捕获
+			t.Release() // the held content can be written now
+		case "content": // system content captured as a whole
 			p.system = append(p.system, systemText(raw))
 		}
 	case 5:
@@ -218,9 +218,9 @@ func (p *proto) OnLeave(t *ason.Transformer) {
 			return
 		}
 		if !p.m.roleSeen {
-			t.Bail("消息没有 role")
+			t.Bail("message without role")
 		}
-	case 4: // part 闭合：type 缺失或未知的 part 丢弃（连同暂存的内容）
+	case 4: // part closed: a part with a missing or unknown type is dropped (held content included)
 		if !p.m.partTypeOK || (p.m.partType != "text" && p.m.partType != "image_url") {
 			t.DropDeferred()
 		}
@@ -234,7 +234,7 @@ func (p *proto) Tail(t *ason.Transformer) {
 		w.JSONString(p.opt.MapModel(""))
 	}
 	if p.msgsSeen && p.outMsgs == 0 {
-		// messages 里全是 system（或为空）：目标形状仍要有 messages
+		// only system messages (or none): the target shape still needs messages
 		w.Key("messages")
 		w.RawString("[]")
 	}
@@ -250,7 +250,7 @@ func (p *proto) Tail(t *ason.Transformer) {
 	}
 }
 
-// ---- 消息 ----
+// ---- messages ----
 
 func (p *proto) msgKey(t *ason.Transformer) ason.Action {
 	switch t.Last() {
@@ -258,7 +258,7 @@ func (p *proto) msgKey(t *ason.Transformer) ason.Action {
 		return ason.Capture(smallCap)
 	case "content":
 		if !p.m.roleSeen {
-			return ason.Defer(roleWaitCap) // 还不知道 role：暂存
+			return ason.Defer(roleWaitCap) // role unknown yet: hold
 		}
 		if p.m.system {
 			return ason.Capture(systemCap)
@@ -275,7 +275,7 @@ func (p *proto) contentStart(t *ason.Transformer, kind ason.ValueKind) ason.Acti
 	case ason.KindArray:
 		return ason.Enter().As("content")
 	}
-	return ason.Bail("content 既不是字符串也不是数组")
+	return ason.Bail("content is neither a string nor an array")
 }
 
 func (p *proto) partKey(t *ason.Transformer) ason.Action {
@@ -284,10 +284,10 @@ func (p *proto) partKey(t *ason.Transformer) ason.Action {
 		return ason.Capture(smallCap)
 	case "text", "image_url":
 		if !p.m.partTypeOK {
-			return ason.Defer(partWaitCap) // type 还没到
+			return ason.Defer(partWaitCap) // type has not arrived yet
 		}
 		if (t.Last() == "text") != (p.m.partType == "text") {
-			return ason.Skip() // 与 type 不符的字段
+			return ason.Skip() // field that does not match the type
 		}
 		return ason.Probe()
 	}
@@ -299,33 +299,33 @@ func (p *proto) partStart(t *ason.Transformer, kind ason.ValueKind) ason.Action 
 	switch t.Last() {
 	case "text":
 		if kind != ason.KindString {
-			return ason.Bail("text 不是字符串")
+			return ason.Bail("text is not a string")
 		}
 		w.Key("type")
 		w.RawString(`"text"`)
 		return ason.Pass()
 	case "image_url":
 		if kind != ason.KindObject {
-			return ason.Bail("image_url 不是对象")
+			return ason.Bail("image_url is not an object")
 		}
 		return ason.Enter().Flat()
 	}
 	return ason.Skip()
 }
 
-// 深度 6：image_url.url
+// depth 6: image_url.url
 func (p *proto) OnPrefix(t *ason.Transformer, raw []byte, complete bool) (ason.Action, int) {
 	dec, off := ason.UnescapePrefix(raw)
 	if !bytes.HasPrefix(dec, []byte("data:")) {
-		return ason.Bail("图片不是 data URL"), 0
+		return ason.Bail("image is not a data URL"), 0
 	}
 	semi := bytes.IndexByte(dec, ';')
 	comma := bytes.IndexByte(dec, ',')
 	if semi < 0 || comma < 0 || comma < semi {
 		if !complete {
-			return ason.Bail("data URL 头超出窗口"), 0
+			return ason.Bail("data URL header exceeds the window"), 0
 		}
-		return ason.Bail("data URL 格式不对"), 0
+		return ason.Bail("malformed data URL"), 0
 	}
 	w := t.W()
 	w.Key("type")
@@ -337,7 +337,7 @@ func (p *proto) OnPrefix(t *ason.Transformer, raw []byte, complete bool) (ason.A
 	return ason.Pass().Wrap(nil, []byte(`"}`)), off[comma+1]
 }
 
-// ---- 子 hook：tools ----
+// ---- sub-hook: tools ----
 
 type toolsHook struct {
 	ason.BaseProtocol
@@ -359,7 +359,7 @@ func (h *toolsHook) OnKey(t *ason.Transformer) ason.Action {
 			return ason.Probe()
 		}
 	default:
-		return ason.Pass() // parameters 内部原样
+		return ason.Pass() // inside parameters: verbatim
 	}
 	return ason.Skip()
 }
@@ -368,13 +368,13 @@ func (h *toolsHook) OnStart(t *ason.Transformer, kind ason.ValueKind) ason.Actio
 	switch t.Depth() {
 	case 2:
 		if kind != ason.KindObject {
-			return ason.Bail("tools 元素不是对象")
+			return ason.Bail("tools element is not an object")
 		}
 		h.nameSeen, h.fnSeen = false, false
 		return ason.Enter()
 	case 3:
 		if kind != ason.KindObject {
-			return ason.Bail("function 不是对象")
+			return ason.Bail("function is not an object")
 		}
 		h.fnSeen = true
 		return ason.Enter().Flat()
@@ -382,7 +382,7 @@ func (h *toolsHook) OnStart(t *ason.Transformer, kind ason.ValueKind) ason.Actio
 		switch t.Last() {
 		case "name":
 			if kind != ason.KindString {
-				return ason.Bail("name 不是字符串")
+				return ason.Bail("name is not a string")
 			}
 			h.nameSeen = true
 			return ason.Pass()
@@ -390,7 +390,7 @@ func (h *toolsHook) OnStart(t *ason.Transformer, kind ason.ValueKind) ason.Actio
 			return ason.Pass()
 		case "parameters":
 			if kind != ason.KindObject {
-				return ason.Bail("parameters 不是对象")
+				return ason.Bail("parameters is not an object")
 			}
 			return ason.Enter().As("input_schema").Lazy()
 		}
@@ -405,7 +405,7 @@ func (h *toolsHook) OnLeave(t *ason.Transformer) {
 	}
 }
 
-// 深度 6 的 url 通过顶层 OnKey 派发：这里补上
+// the url at depth 6 is dispatched through the top-level OnKey: handled here
 func (p *proto) urlKey(t *ason.Transformer) ason.Action {
 	if t.Last() == "url" {
 		return ason.Prefix(urlWindow)
@@ -413,7 +413,7 @@ func (p *proto) urlKey(t *ason.Transformer) ason.Action {
 	return ason.Skip()
 }
 
-// systemText 取 system 内容的文本：字符串直接用；数组则逐项取 type 为 text 且 text 是字符串的部分连接，其余忽略。
+// systemText extracts the text of system content: a string as is; for an array, the parts whose type is text and whose text is a string, joined; the rest ignored.
 func systemText(raw []byte) string {
 	if s, ok := ason.JSONUnquote(raw); ok {
 		return s

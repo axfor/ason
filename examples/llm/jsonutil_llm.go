@@ -2,7 +2,7 @@ package llm
 
 import "strconv"
 
-// gjsonBool 复刻 gjson.Result.Bool()：true 字面量、非零数字、可被 ParseBool 的字符串。
+// gjsonBool reproduces gjson.Result.Bool(): the true literal, non-zero numbers, strings accepted by ParseBool.
 func gjsonBool(raw []byte) bool {
 	if len(raw) == 0 {
 		return false
@@ -24,7 +24,7 @@ func gjsonBool(raw []byte) bool {
 	return false
 }
 
-// lower：ASCII 小写（gjson 的 true/false 判定不区分大小写）。
+// lower: ASCII lowercase (gjson's true/false check is case-insensitive).
 func lower(s string) string {
 	b := []byte(s)
 	for i, c := range b {

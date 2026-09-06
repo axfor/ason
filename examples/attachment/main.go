@@ -1,4 +1,4 @@
-// 附件流式：data URL 只看前缀（一个小窗口）拆出 mime，base64 主体直通到另一个形状里，永不进内存。
+// Streaming an attachment: only the prefix of the data URL (a small window) is inspected to extract the mime type; the base64 payload streams into another shape and never enters memory.
 //
 //	echo '{"image":"data:image/png;base64,iVBORw0KGgo=","n":1}' | go run ./examples/attachment
 package main
@@ -23,11 +23,11 @@ func (dataURLProto) OnKey(t *ason.Transformer) ason.Action {
 func (dataURLProto) OnPrefix(t *ason.Transformer, raw []byte, complete bool) (ason.Action, int) {
 	dec, off := ason.UnescapePrefix(raw)
 	if !bytes.HasPrefix(dec, []byte("data:")) {
-		return ason.Bail("不是 data URL"), 0
+		return ason.Bail("not a data URL"), 0
 	}
 	comma := bytes.IndexByte(dec, ',')
 	if comma < 0 {
-		return ason.Bail("data URL 头超出窗口"), 0
+		return ason.Bail("data URL header exceeds the window"), 0
 	}
 	mime := strings.TrimSuffix(string(dec[5:comma]), ";base64")
 	w := t.W()

@@ -26,7 +26,7 @@ func runKeyProbe(t *testing.T, tr *Transformer, in string, chunk int) (string, b
 	return sb.String(), true, ""
 }
 
-// 改写 model：输出必须与 sjson.SetBytes 逐字节一致（格式保留），且 Prelude 报告 model。
+// Rewriting model: the output must be byte-identical to sjson.SetBytes (formatting preserved) and the Prelude must report model.
 func TestKeyProbeRewriteMatchesSjson(t *testing.T) {
 	r := rand.New(rand.NewSource(7))
 	bodies := []string{
@@ -78,7 +78,7 @@ func TestKeyProbeRewriteMatchesSjson(t *testing.T) {
 				t.Fatalf("%s chunk=%d: %s", in, cs, why)
 			}
 			captured := string(tr.Protocol().(*KeyProbe).Captured()["model"])
-			// 期望：gjson 取首个 model；有 "/" 就 sjson 改首个
+			// expectation: gjson reads the first model; with a "/" sjson rewrites the first
 			var m map[string]any
 			_ = json.Unmarshal([]byte(in), &m)
 			want := in
@@ -102,7 +102,7 @@ func TestKeyProbeRewriteMatchesSjson(t *testing.T) {
 	}
 }
 
-// firstModelRaw 取顶层第一个 "model" 的原始值（测试用的朴素实现）。
+// firstModelRaw returns the raw value of the first top-level "model" (a naive implementation for the test).
 func firstModelRaw(in string) string {
 	tr := NewKeyProbeTransformer(KeyProbeOptions{Keys: map[string]int{"model": 4096}, Observe: true})
 	tr.Write([]byte(in))
@@ -110,7 +110,7 @@ func firstModelRaw(in string) string {
 	return string(tr.Protocol().(*KeyProbe).Captured()["model"])
 }
 
-// 观察形态：不改字节，回调拿到值。
+// Observe mode: bytes untouched, the callback receives the value.
 func TestKeyProbeObserve(t *testing.T) {
 	in := `{"stream":true,"model":"m","x":[1,2]}`
 	var got []string
@@ -121,7 +121,7 @@ func TestKeyProbeObserve(t *testing.T) {
 		}})
 	out, ok, why := runKeyProbe(t, tr, in, 2)
 	if !ok || out != in {
-		t.Fatalf("观察形态必须原样: ok=%v why=%s out=%s", ok, why, out)
+		t.Fatalf("observe mode must keep the bytes: ok=%v why=%s out=%s", ok, why, out)
 	}
 	vals := tr.Protocol().(*KeyProbe).Captured()
 	if string(vals["model"]) != `"m"` || string(vals["stream"]) != `true` || strings.Join(got, " ") != `stream=true model="m"` {

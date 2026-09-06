@@ -1,5 +1,5 @@
-// 观察：只看不改。Skip 一切、Capture 几个小字段，数 items 的元素个数；输出扔掉，原始字节由调用方自己转发。
-// 这是"统计 / 审计"类用法：文档再大也只花常数内存。
+// Observe: look but do not touch. Skip everything, Capture a few small fields, count the elements of items; the output is discarded and the caller forwards the raw bytes itself.
+// This is the "statistics / audit" use: constant memory however large the document.
 //
 //	echo '{"owner":"team/42","items":[{"a":1},{"b":2},3]}' | go run ./examples/observe
 package main
@@ -41,7 +41,7 @@ func (o *observer) OnElem(t *ason.Transformer) ason.Action {
 func (o *observer) OnValue(t *ason.Transformer, raw []byte) { o.owner, _ = ason.JSONUnquote(raw) }
 
 func main() {
-	chunk := flag.Int("chunk", 5, "每次喂给转换器的字节数")
+	chunk := flag.Int("chunk", 5, "bytes fed to the transformer per call")
 	flag.Parse()
 	o := &observer{}
 	tr := ason.NewTransformer(o)
@@ -53,9 +53,9 @@ func main() {
 	for {
 		n, err := in.Read(buf)
 		if n > 0 {
-			os.Stdout.Write(buf[:n]) // 原样转发
+			os.Stdout.Write(buf[:n]) // forward verbatim
 			tr.Write(buf[:n])
-			tr.Out() // 观察者的输出没人要，取走以免积累
+			tr.Out() // nobody wants the observer's output; take it so it does not accumulate
 		}
 		if err != nil {
 			break

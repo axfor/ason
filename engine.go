@@ -1,12 +1,12 @@
-// Package ason 是流式跨协议 JSON 转换框架：
+// Package ason is a streaming cross-protocol JSON transformation framework:
 //
-//	层 1 Scanner  —— 协议无关的字节级扫描器（本文件），把输入切成 key / 值 / 容器事件
-//	层 2 Protocol —— 每协议一套手写 hooks（proto_*.go），对每个事件返回动作
-//	层 3 Guard    —— 提交点 / 回落窗口（本文件的 committed / Bail 语义 + 集成层）
+//	layer 1 Scanner  - the protocol-agnostic byte-level scanner (this file), which turns the input into key / value / container events
+//	layer 2 Protocol - one set of hand-written hooks per protocol (proto_*.go), returning an action for every event
+//	layer 3 Guard    - commit point / fallback window (the committed / Bail semantics of this file plus the integration layer)
 //
-// 扫描器不建对象树。值要么原样流向输出（Pass），要么丢弃（Skip），
-// 要么在协议明确要求时才进入有界缓冲（Capture / Defer / Prefix）。
-// 内存与输入大小无关，只与协议要求缓冲的那几个小值有关。
+// The scanner builds no object tree. A value either streams to the output unchanged (Pass), is dropped (Skip),
+// or enters a bounded buffer only when the protocol asks for it (Capture / Defer / Prefix).
+// Memory is independent of the input size; it depends only on the few small values the protocol buffers.
 package ason
 
 import (
@@ -33,62 +33,62 @@ const (
 type phase uint8
 
 const (
-	phKey   phase = iota // 对象：期待 key（或 }）
-	phColon              // 对象：期待 :
-	phValue              // 期待值（数组：或 ]）
-	phComma              // 期待 , 或闭合
+	phKey   phase = iota // object: expecting a key (or })
+	phColon              // object: expecting :
+	phValue              // expecting a value (array: or ])
+	phComma              // expecting , or a closing bracket
 )
 
-// 区域内部的文法阶段：把"当前容器是对象还是数组"编码进阶段里，结构字符的合法性与后继阶段查表即得。
+// Grammar phases inside a region: whether the current container is an object or an array is encoded in the phase, so the validity of a structural character and the next phase are one table lookup.
 type regPhase uint8
 
 const (
-	rErr     regPhase = iota // 查表结果：非法
-	rTop                     // 区域顶层，期待值（区域一开始）
-	rKey0                    // 对象刚打开：期待 key 或 }
-	rKey                     // 对象逗号之后：期待 key
-	rColon                   // key 之后：期待 :
-	rOValue                  // 冒号之后：期待值
-	rOComma                  // 对象里值之后：期待 , 或 }
-	rAValue0                 // 数组刚打开：期待值或 ]
-	rAValue                  // 数组逗号之后：期待值
-	rAComma                  // 数组里值之后：期待 , 或 ]
+	rErr     regPhase = iota // lookup result: invalid
+	rTop                     // region top level, expecting a value (start of the region)
+	rKey0                    // object just opened: expecting a key or }
+	rKey                     // object after a comma: expecting a key
+	rColon                   // after a key: expecting :
+	rOValue                  // after a colon: expecting a value
+	rOComma                  // after a value in an object: expecting , or }
+	rAValue0                 // array just opened: expecting a value or ]
+	rAValue                  // array after a comma: expecting a value
+	rAComma                  // after a value in an array: expecting , or ]
 )
 
 var (
-	// 字符串开头之后的阶段（key 或值）。
+	// phase after the start of a string (key or value).
 	regAfterStr = [...]regPhase{rKey0: rColon, rKey: rColon, rOValue: rOComma, rAValue0: rAComma, rAValue: rAComma, rAComma: rErr}
-	// 标量 / 容器开头之后（容器再由 regPush 覆盖）。
+	// after the start of a scalar / container (containers are then overridden by regPush).
 	regAfterVal = [...]regPhase{rOValue: rOComma, rAValue0: rAComma, rAValue: rAComma, rAComma: rErr}
-	// 逗号之后。
+	// after a comma.
 	regAfterComma = [...]regPhase{rOComma: rKey, rAComma: rAValue}
-	// 能否闭合：0 = 不能（缺 key / 缺值 / 多余逗号），1 = 对象可闭合，2 = 数组可闭合。
+	// can the container close: 0 = no (missing key / value, trailing comma), 1 = object may close, 2 = array may close.
 	regClose = [...]uint8{rKey0: 1, rOComma: 1, rAValue0: 2, rAComma: 2}
 )
 
-// frame 是一个 Enter 进来的容器（派发帧）。区域内部的容器不建帧，只计深度。
+// frame is a container entered with Enter (a dispatch frame). Containers inside regions get no frame, only a depth count.
 type frame struct {
 	kind     frameKind
 	ph       phase
 	idx      int
-	n        int  // 已完成的值个数（对象）
-	flat     bool // 输出侧没有对应层
-	lazy     bool // 闭合时不物化空容器
+	n        int  // number of completed values (object)
+	flat     bool // no matching level on the output side
+	lazy     bool // do not materialize an empty container on close
 	seen     []string
 	deferred []DeferredKV
-	hook     Protocol // 这一帧内的回调接收方；nil = 主协议
+	hook     Protocol // receiver of the callbacks inside this frame; nil = the main protocol
 }
 
-// DeferredKV 是 Defer 暂存的一对 key/value 原始字节。
+// DeferredKV is a raw key/value pair held by Defer.
 type DeferredKV struct {
 	Key    string
-	KeyRaw []byte // [空白]"key"[空白]:[空白]
+	KeyRaw []byte // [ws]"key"[ws]:[ws]
 	Raw    []byte
 }
 
 type seg struct {
 	k string
-	i int // -1 = key 段
+	i int // -1 = key segment
 }
 
 type regionTarget uint8
@@ -103,26 +103,26 @@ const (
 	rtPrefix
 )
 
-// keyCacheSize 是 key 驻留缓存的槽数：直接映射、固定 4KB，与文档里不同 key 的数量无关；
-// 重复出现的 key（正常文档里绝大多数派发）不再分配，海量不同 key 的对抗性输入也不会让它增长。
+// keyCacheSize is the number of slots of the key intern cache: direct-mapped, a fixed 4KB, independent of how many distinct keys the document has;
+// repeated keys (the vast majority of dispatches in normal documents) no longer allocate, and adversarial input with a flood of distinct keys cannot make it grow.
 const keyCacheSize = 256
 
-// CommitBytes 是提交点窗口：扫描这么多输入字节之前不下发任何输出。
-// 越过之前判定不支持，调用方仍持有全部原始字节，可以干净回落。
+// CommitBytes is the commit window: no output is released before this many input bytes have been scanned.
+// A bail before that point leaves the caller holding every raw byte, so it can fall back cleanly.
 const CommitBytes = 64 << 10
 
-// Transformer 把一个 Protocol 接到扫描器上。Write 逐块喂入，Out 取出可下发的字节。
+// Transformer connects a Protocol to the scanner. Write feeds chunks, Out takes the releasable bytes.
 type Transformer struct {
 	proto Protocol
 	w     Writer
 
-	// DupKeyBail：派发帧内出现重复 key 时判定不支持。
-	// 目标协议用 struct 解析（后者覆盖前者）时应开启；字节透传类协议不需要。
+	// DupKeyBail: bail on a duplicate key inside a dispatch frame.
+	// Enable it when the target protocol decodes into structs (last wins); byte-passthrough protocols do not need it.
 	DupKeyBail bool
 
 	st     scanState
 	esc    bool
-	hexN   uint8 // \u 转义还需读取的 hex 位数
+	hexN   uint8 // hex digits still to read of a \u escape
 	lit    litState
 	depth  int
 	frames []frame
@@ -133,24 +133,24 @@ type Transformer struct {
 	pend    Action
 	pendSet bool
 
-	// 原样保留派发帧里 key 周围的空白：kvRaw = [空白]"key"[空白]:[空白]，elemWs = 元素前空白。
-	// 透传类协议靠它做到"没动的字节一个不改"，效果与 sjson 的原地修改一致。
+	// Whitespace around keys in dispatch frames is kept verbatim: kvRaw = [ws]"key"[ws]:[ws], elemWs = whitespace before an element.
+	// Passthrough protocols rely on it for "untouched bytes stay identical", matching sjson's in-place rewrite.
 	kvRaw       []byte
 	wsRaw       []byte
 	elemWs      []byte
 	rootCloseWs []byte
-	tailWs      []byte                // 根对象之后的空白（如尾部换行）：Finish 时原样吐出
-	keys        *[keyCacheSize]string // key 驻留缓存（直接映射，按 key 字节的哈希定位）
+	tailWs      []byte                // whitespace after the root object (a trailing newline, say): written verbatim in Finish
+	keys        *[keyCacheSize]string // key intern cache (direct-mapped, slot chosen by a hash of the key bytes)
 
 	validateUTF8 bool
 	u8           utf8State
 	dup          DupKeys
 	root         RootKind
 
-	commit        int    // 提交点窗口；0 = CommitBytes
-	budget        int    // 所有缓冲之和的上限；0 = 不限
-	deferredBytes int    // 当前所有派发帧里 Defer 项占用的字节数
-	leadWs        []byte // 根对象之前的空白：根打开时原样吐出
+	commit        int    // commit window; 0 = CommitBytes
+	budget        int    // cap on the sum of all buffers; 0 = unlimited
+	deferredBytes int    // bytes currently held by Defer items across all dispatch frames
+	leadWs        []byte // whitespace before the root object: written verbatim when the root opens
 
 	regOpen  bool
 	regT     regionTarget
@@ -160,72 +160,72 @@ type Transformer struct {
 	regCap   int
 	regKey   string
 	capBuf   []byte
-	// 区域内部的文法状态：只在结构字符上更新，数据字节不经过它。与派发帧一样按 JSON 文法拒绝
-	// 括号种类不配、缺 key / 缺冒号 / 缺值、多余逗号——区域里的 JSON 同样必须是 encoding/json 会接受的。
+	// Grammar state inside regions: updated only on structural characters, data bytes never touch it. Like dispatch frames it rejects
+	// mismatched bracket kinds, missing keys / colons / values and trailing commas: JSON inside a region must be acceptable to encoding/json too.
 	regPh    regPhase
-	regN     int    // 区域内容器层数
-	regKinds uint64 // 前 64 层容器种类的位栈（1 = 数组），第 n 层在第 n 位
-	regDeep  []bool // 超过 64 层时的溢出栈（罕见）
+	regN     int    // number of container levels inside the region
+	regKinds uint64 // bit-stack of container kinds for the first 64 levels (1 = array), level n at bit n
+	regDeep  []bool // overflow stack beyond 64 levels (rare)
 
 	wantRelease bool
-	releaseAt   int // 请求回放时所在的派发帧号：只在该帧的安全点消费，进入子帧不会误消费
+	releaseAt   int // dispatch frame index where the replay was requested: consumed only at that frame's safe point, never by a child frame
 
 	scanned     int
 	committed   bool
 	unsupported bool
 	err         *Error
 	sink        func([]byte)
-	limitAt     int   // 上限 / 预算超限时：本次追加里装得下的字节数（定位第一个装不下的字节）
-	scanBase    int64 // 当前 Write 的块在整个输入里的起始偏移
-	replaying   int   // > 0：正在回放 Defer 项（嵌套 scan），错误偏移取外层位置
+	limitAt     int   // on a cap / budget overflow: how many bytes of this append still fit (locates the first byte that does not)
+	scanBase    int64 // offset of the current Write chunk within the whole input
+	replaying   int   // > 0: replaying Defer items (nested scan), error offsets take the outer position
 	dead        bool
 	rootSeen    bool
 	rootDone    bool
 }
 
-// NewTransformer 用指定协议构造转换器。
+// NewTransformer builds a transformer with the given protocol.
 func NewTransformer(p Protocol) *Transformer {
 	return &Transformer{proto: p}
 }
 
-// ---- 对外：Guard 语义 ----
+// ---- public: Guard semantics ----
 
-// DupKeys 是派发帧里重复 key 的策略。
+// DupKeys is the policy for duplicate keys inside a dispatch frame.
 type DupKeys uint8
 
 const (
-	DupKeysPass  DupKeys = iota // 默认：不检查，重复的 key 照常派发（透传语义）
-	DupKeysBail                 // 判定不支持（目标是 struct 语义、后者覆盖前者、流式无法复刻时）
-	DupKeysFirst                // 只派发第一个，后面的同名 key 自动 Skip（gjson 取首个的语义）
+	DupKeysPass  DupKeys = iota // default: no check, duplicates are dispatched as usual (passthrough semantics)
+	DupKeysBail                 // bail (when the target has struct semantics, last wins, and streaming cannot reproduce that)
+	DupKeysFirst                // dispatch only the first, later occurrences of the same key are Skipped automatically (gjson first-wins semantics)
 )
 
-// SetDupKeys 设置重复 key 策略（DupKeyBail 字段等价于 DupKeysBail，保留兼容）。
+// SetDupKeys sets the duplicate key policy (the DupKeyBail field is equivalent to DupKeysBail and kept for compatibility).
 func (t *Transformer) SetDupKeys(d DupKeys) { t.dup = d }
 
-// RootKind 是允许的根形状。
+// RootKind is the set of allowed root shapes.
 type RootKind uint8
 
 const (
-	RootObject RootKind = iota // 默认
+	RootObject RootKind = iota // default
 	RootArray
-	RootAny // 对象或数组
+	RootAny // object or array
 )
 
-// SetRoot 设置允许的根形状。根是数组时深度 1 是下标，经 OnElem 派发。
+// SetRoot sets the allowed root shape. With an array root, depth 1 is an index and dispatches through OnElem.
 func (t *Transformer) SetRoot(k RootKind) { t.root = k }
 
-// SetValidateUTF8 开启字符串与 key 的 UTF-8 校验（RFC 3629：拒绝过长编码、代理对、超出 U+10FFFF、
-// 孤立或缺失的续字节，含跨块的序列）。默认关闭——encoding/json 不拒绝非法 UTF-8，只替换。
+// SetValidateUTF8 enables UTF-8 validation of strings and keys (RFC 3629: overlong encodings, surrogates, code points above
+// U+10FFFF, stray or missing continuation bytes are rejected, sequences split across chunks included). Off by default: encoding/json does not reject invalid UTF-8 either, it replaces it.
 func (t *Transformer) SetValidateUTF8(on bool) { t.validateUTF8 = on }
 
-// SetCommitBytes 设置本转换器的提交点窗口（0 恢复包默认 CommitBytes）。必须在第一次 Write 之前调用。
+// SetCommitBytes sets the commit window of this transformer (0 restores the package default CommitBytes). Must be called before the first Write.
 func (t *Transformer) SetCommitBytes(n int) { t.commit = n }
 
-// SetBudget 设置所有缓冲（Capture / Observe / Prefix 窗口、Defer 暂存、提交前攒着的输出）之和的上限，
-// 超过即判定不支持（"缓冲预算超限"）。0 = 不限。这是内存上界的总量保证；各处 cap 仍是单项约束。
+// SetBudget caps the sum of every buffer (Capture / Observe / Prefix windows, Defer holds, output kept before the commit point);
+// exceeding it bails ("buffer budget exceeded"). 0 = unlimited. This is the total bound on memory; the individual caps remain per-item limits.
 func (t *Transformer) SetBudget(n int) { t.budget = n }
 
-// Buffered 报告当前持有的缓冲字节数（观测用）。
+// Buffered reports the number of buffered bytes currently held (for observation).
 func (t *Transformer) Buffered() int {
 	n := len(t.capBuf) + t.deferredBytes
 	if !t.committed {
@@ -241,7 +241,7 @@ func (t *Transformer) commitBytes() int {
 	return CommitBytes
 }
 
-// checkBudget 在缓冲增长处调用。
+// checkBudget is called wherever a buffer grows.
 func (t *Transformer) checkBudget(extra int) bool {
 	if t.budget > 0 && t.Buffered()+extra > t.budget {
 		t.BailErr(ErrLimit, "buffer budget exceeded")
@@ -250,14 +250,14 @@ func (t *Transformer) checkBudget(extra int) bool {
 	return true
 }
 
-// Committed 报告是否已越过提交点。越过之后再判定不支持，已发出的字节收不回来。
+// Committed reports whether the commit point has been passed. A bail after it cannot take back the bytes already released.
 func (t *Transformer) Committed() bool { return t.committed }
 
-// Dead 报告转换器是否已停止（判定不支持之后）。协议在回调里可据此提前返回。
+// Dead reports whether the transformer has stopped (after a bail). Protocols can return early from callbacks on it.
 func (t *Transformer) Dead() bool { return t.dead }
 
-// Unsupported 报告是否遇到了处理不了的输入。为 true 时输出不可用。
-// 文案是 Err().Error()：原因 + 字节偏移 + 路径，适合直接进日志；按类别处理用 Err().Code。
+// Unsupported reports whether input the transformer cannot handle was met. When true the output is unusable.
+// The text is Err().Error(): reason + byte offset + path, ready for a log line; classify with Err().Code instead.
 func (t *Transformer) Unsupported() (bool, string) {
 	if t.err == nil {
 		return false, ""
@@ -265,48 +265,48 @@ func (t *Transformer) Unsupported() (bool, string) {
 	return true, t.err.Error()
 }
 
-// SetSink 设置输出接收方。设了之后，每次 Write / Finish 里越过提交点后产生的输出直接交给 sink，
-// 输出缓冲随后复用而不是交出所有权——每块不再分配一次、整条流不再制造与输入等量的垃圾，
-// 适合能立即消费的调用方（写宿主、写连接）。sink 返回前必须消费完 b（拷贝或写出），返回后 b 失效。
-// 设了 sink 之后 Out() 总是返回空。必须在第一次 Write 之前调用。
+// SetSink sets an output receiver. Once set, output produced past the commit point in each Write / Finish goes straight to the
+// sink and the output buffer is reused instead of handed over: no allocation per chunk, and a stream no longer produces as much
+// garbage as it has input. Meant for callers that consume immediately (writing to a host or a connection). The sink must consume b before returning; b is invalid afterwards.
+// With a sink set Out() always returns nothing. Must be called before the first Write.
 func (t *Transformer) SetSink(sink func(b []byte)) { t.sink = sink }
 
-// drain 把可下发的输出交给 sink（提交点之后、未判定不支持时）。
+// drain hands the releasable output to the sink (past the commit point, no bail).
 func (t *Transformer) drain(chunk int) {
 	if t.unsupported || !t.committed || len(t.w.buf) == 0 {
 		return
 	}
 	t.sink(t.w.buf)
 	if cap(t.w.buf) > 2*chunk+4096 {
-		t.w.buf = nil // 提交前攒下的大缓冲不留着；下一块按块大小重新分配后一直复用
+		t.w.buf = nil // do not keep the large pre-commit buffer; the next chunk allocates one of chunk size which is then reused
 		t.w.hint = chunk
 	} else {
 		t.w.buf = t.w.buf[:0]
 	}
 }
 
-// Out 取走可下发的字节。未越过提交点、或已判定不支持、或设了 sink 时返回空。
+// Out takes the releasable bytes. Returns nothing before the commit point, after a bail, or when a sink is set.
 func (t *Transformer) Out() []byte {
 	if t.unsupported || !t.committed || len(t.w.buf) == 0 || t.sink != nil {
 		return nil
 	}
-	// 交出所有权，不拷贝也不保留容量：提交点前攒下的大缓冲（可达 128KB）随之变成垃圾，
-	// 而不是被这条流持有到结束——高并发下每条在途流的存活内存由此从 ~250KB 降到几十 KB。
-	// 调用方拿到的切片归它所有；下一次写入会重新分配。
+	// Hand over ownership without copying or keeping capacity: the large pre-commit buffer (up to 128KB) becomes garbage right
+	// away instead of being held by this stream to the end, which brings the live memory of an in-flight stream under high
+	// concurrency from ~250KB down to a few dozen KB. The caller owns the slice; the next write allocates a new one.
 	b := t.w.buf
 	t.w.hint = len(b)
 	t.w.buf = nil
 	return b
 }
 
-// Write 喂入一块输入，可在任意字节边界切分。
+// Write feeds one chunk of input; chunks may be split at any byte boundary.
 func (t *Transformer) Write(p []byte) {
 	if t.dead {
 		return
 	}
 	t.scanBase = int64(t.scanned)
 	t.scanned += len(p)
-	t.w.reserve(len(p)) // 一块输出只分配一次缓冲（按上次交出的大小预留）
+	t.w.reserve(len(p)) // allocate the output buffer once per chunk (reserved by the size handed over last time)
 	t.scan(p)
 	t.fixOffset(int64(t.scanned))
 	if !t.committed && !t.unsupported {
@@ -322,8 +322,8 @@ func (t *Transformer) Write(p []byte) {
 	}
 }
 
-// Finish 收尾：调用协议 Tail，闭合根对象。
-// 若在此判定不支持，committed 保持原值——集成层据此决定回落还是失败。
+// Finish wraps up: calls the protocol's Tail and closes the root object.
+// If it bails here, committed keeps its value; the integration layer uses that to choose between fallback and failure.
 func (t *Transformer) Finish() []byte {
 	if t.dead {
 		return nil
@@ -345,7 +345,7 @@ func (t *Transformer) Finish() []byte {
 	}
 	t.w.ensureOpen(0)
 	t.w.pop(t.rootCloseWs)
-	t.w.buf = append(t.w.buf, t.tailWs...) // 根之后的空白（尾部换行）保真
+	t.w.buf = append(t.w.buf, t.tailWs...) // whitespace after the root (a trailing newline) is kept
 	t.committed = true
 	if t.sink != nil {
 		t.drain(0)
@@ -354,7 +354,7 @@ func (t *Transformer) Finish() []byte {
 	return t.Out()
 }
 
-// cur 返回当前帧的回调接收方（Via 挂载的子 hook，或主协议）。
+// cur returns the callback receiver of the current frame (the sub-hook mounted with Via, or the main protocol).
 func (t *Transformer) cur() Protocol {
 	if f := t.top(); f != nil && f.hook != nil {
 		return f.hook
@@ -362,7 +362,7 @@ func (t *Transformer) cur() Protocol {
 	return t.proto
 }
 
-// hookAt 返回第 i 帧的回调接收方；i < 0 或该帧未挂载时是主协议。
+// hookAt returns the callback receiver of frame i; the main protocol when i < 0 or the frame has no hook.
 func (t *Transformer) hookAt(i int) Protocol {
 	if i >= 0 && i < len(t.frames) && t.frames[i].hook != nil {
 		return t.frames[i].hook
@@ -370,18 +370,18 @@ func (t *Transformer) hookAt(i int) Protocol {
 	return t.proto
 }
 
-// ---- 对协议：路径与输出 ----
+// ---- for protocols: path and output ----
 
-// Protocol 返回接入的协议（集成层用它取 Prelude）。
+// Protocol returns the protocol in use (the integration layer reads the Prelude through it).
 func (t *Transformer) Protocol() Protocol { return t.proto }
 
-// W 输出器。
+// W is the output writer.
 func (t *Transformer) W() *Writer { return &t.w }
 
-// Depth 当前路径段数。
+// Depth is the number of path segments.
 func (t *Transformer) Depth() int { return len(t.path) }
 
-// Key 第 level 段的 key；该段是数组下标时返回 ""。
+// Key is the key of segment level; "" when that segment is an array index.
 func (t *Transformer) Key(level int) string {
 	if level < 0 || level >= len(t.path) {
 		return ""
@@ -389,7 +389,7 @@ func (t *Transformer) Key(level int) string {
 	return t.path[level].k
 }
 
-// Idx 第 level 段的数组下标；该段是 key 时返回 -1。
+// Idx is the array index of segment level; -1 when that segment is a key.
 func (t *Transformer) Idx(level int) int {
 	if level < 0 || level >= len(t.path) {
 		return -1
@@ -397,10 +397,10 @@ func (t *Transformer) Idx(level int) int {
 	return t.path[level].i
 }
 
-// Last 最后一段的 key。
+// Last is the key of the last segment.
 func (t *Transformer) Last() string { return t.Key(len(t.path) - 1) }
 
-// PathString 调试用："messages[1].content"。
+// PathString is for debugging: "messages[1].content".
 func (t *Transformer) PathString() string {
 	var b []byte
 	for i, s := range t.path {
@@ -418,21 +418,21 @@ func (t *Transformer) PathString() string {
 	return string(b)
 }
 
-// KeyRaw 当前 key 的原始字节（含前导空白、引号、冒号及其周围空白）。协议想原样保留格式时用它。
+// KeyRaw is the raw bytes of the current key (leading whitespace, quotes, colon and the whitespace around it). Protocols use it to keep the original formatting.
 func (t *Transformer) KeyRaw() []byte { return t.kvRaw }
 
-// Release 请求回放当前派发帧里 Defer 的项。回放发生在当前回调返回后、同一帧的安全点
-// （当前值结束或该帧闭合）；若回调返回 Enter 进入了子帧，回放推迟到回到本帧之后。
+// Release asks to replay the Defer items of the current dispatch frame. The replay happens after the current callback returns, at
+// the next safe point of the same frame (the end of the current value or the close of the frame); if the callback returned Enter into a child frame, the replay waits until this frame is back.
 func (t *Transformer) Release() {
 	t.wantRelease = true
 	t.releaseAt = len(t.frames) - 1
 }
 
-// ReleaseNow 同步回放当前派发帧里 Defer 的项。只能在 OnLeave 里调用——
-// 那时路径正指向容器本身，回放的 key 会正确地挂在它下面；在 OnValue 里要用 Release。
+// ReleaseNow replays the Defer items of the current dispatch frame synchronously. Only valid inside OnLeave, where the path still
+// points at the container itself and the replayed keys attach below it correctly; inside OnValue use Release.
 func (t *Transformer) ReleaseNow() { t.doRelease() }
 
-// Deferred 查看当前派发帧里 Defer 的项。
+// Deferred returns the Defer items of the current dispatch frame.
 func (t *Transformer) Deferred() []DeferredKV {
 	if f := t.top(); f != nil {
 		return f.deferred
@@ -440,7 +440,7 @@ func (t *Transformer) Deferred() []DeferredKV {
 	return nil
 }
 
-// DropDeferred 丢弃当前派发帧里 Defer 的项。
+// DropDeferred discards the Defer items of the current dispatch frame.
 func (t *Transformer) DropDeferred() {
 	if f := t.top(); f != nil {
 		t.forgetDeferred(f)
@@ -448,16 +448,16 @@ func (t *Transformer) DropDeferred() {
 	}
 }
 
-// forgetDeferred 把一帧里 Defer 项的字节从计数里扣掉（回放或丢弃时）。
+// forgetDeferred subtracts the bytes of a frame's Defer items from the count (on replay or discard).
 func (t *Transformer) forgetDeferred(f *frame) {
 	for _, d := range f.deferred {
 		t.deferredBytes -= len(d.KeyRaw) + len(d.Raw)
 	}
 }
 
-// ---- 扫描器 ----
+// ---- scanner ----
 
-// pushFrame 压入派发帧，复用槽位里上一次留下的 seen / deferred 存储，不再按帧分配。
+// pushFrame pushes a dispatch frame, reusing the seen / deferred storage left in the slot instead of allocating per frame.
 func (t *Transformer) pushFrame(nf frame) {
 	if n := len(t.frames); n < cap(t.frames) {
 		old := &t.frames[:n+1][n]
@@ -481,7 +481,7 @@ func (t *Transformer) scan(p []byte) {
 	}
 	i := 0
 	if t.replaying == 0 {
-		defer func() { // 判定不支持时把偏移定在出错的字节（回调里判定的取当前扫描位置）
+		defer func() { // on a bail, pin the offset to the failing byte (a bail inside a callback takes the current scan position)
 			if t.dead {
 				t.fixOffset(t.scanBase + int64(i))
 			}
@@ -517,7 +517,7 @@ scan:
 			if t.validateUTF8 {
 				j = t.scanStrUTF8(p, i)
 				if t.dead {
-					i = j // 非法序列的位置
+					i = j // position of the invalid sequence
 					continue
 				}
 			} else {
@@ -537,7 +537,7 @@ scan:
 				i++
 				continue
 			}
-			// 未转义的引号：字符串结束
+			// unescaped quote: end of the string
 			t.st = sIdle
 			if t.regOpen && t.depth == t.regDepth {
 				end := i + 1
@@ -587,7 +587,7 @@ scan:
 					i = j
 					continue
 				}
-			} else if j := scanStringBody(p, i); j > i { // 普通字节成段追加
+			} else if j := scanStringBody(p, i); j > i { // append plain bytes as a run
 				t.keyBuf = append(t.keyBuf, p[i:j]...)
 				t.kvRaw = append(t.kvRaw, p[i:j]...)
 				i = j
@@ -612,7 +612,7 @@ scan:
 			i++
 		case sInScalar:
 			if isScalarByte(c) {
-				if t.lit.kind == KindNumber { // 内联的表驱动 DFA：数字是区域内最常见的标量
+				if t.lit.kind == KindNumber { // inlined table-driven DFA: numbers are the most common scalar inside regions
 					for i < len(p) && isScalarByte(p[i]) {
 						t.lit.num = numStep(t.lit.num, p[i])
 						if t.lit.num == nsBad {
@@ -642,7 +642,7 @@ scan:
 				t.endRegion()
 				t.afterValue()
 			}
-			// 不消费 c，回到 sIdle 处理
+			// c is not consumed; back to sIdle to handle it
 		case sIdle:
 			if jsonSpace[c] {
 				if !t.regOpen && t.rootSeen && !t.rootDone {
@@ -656,9 +656,9 @@ scan:
 				continue
 			}
 			if t.regOpen {
-				// 区域内部：只跟踪文法，不派发。紧凑循环一口气吃掉结构字符与空白，
-				// 只在进入字符串 / 标量或区域闭合时回到外层状态机。文法阶段放在局部变量里，退出时写回；
-				// 阶段本身编码了当前容器的种类，逗号 / 冒号 / 字符串 / 标量都不用查栈，栈只在括号处动。
+				// Inside a region: only track the grammar, no dispatch. A tight loop consumes structural characters and whitespace in one go
+				// and returns to the outer state machine only for a string / scalar or when the region closes. The grammar phase lives in a local
+				// and is written back on exit; it encodes the container kind, so commas / colons / strings / scalars never touch the stack, only brackets do.
 				ph := t.regPh
 				for i < len(p) {
 					c = p[i]
@@ -741,7 +741,7 @@ scan:
 			}
 			f := t.top()
 			if f == nil {
-				// 根
+				// root
 				isArr := c == '['
 				if (c == '{' && t.root == RootArray) || (isArr && t.root == RootObject) || (c != '{' && c != '[') {
 					switch t.root {
@@ -761,7 +761,7 @@ scan:
 				} else {
 					t.pushFrame(frame{kind: fkObj, ph: phKey, idx: -1})
 				}
-				t.w.buf = append(t.w.buf, t.leadWs...) // 根之前的空白保真
+				t.w.buf = append(t.w.buf, t.leadWs...) // whitespace before the root is kept
 				t.w.push("", nil, isArr)
 				t.wsRaw = t.wsRaw[:0]
 				i++
@@ -802,7 +802,7 @@ scan:
 					t.BailErr(ErrSyntax, "unexpected comma")
 					continue
 				}
-				t.w.trailWs(t.wsRaw) // 值与逗号之间的空白：挂到输出层，写下一个分隔符时原样吐出
+				t.w.trailWs(t.wsRaw) // whitespace between a value and its comma: parked on the output level, written verbatim with the next separator
 				t.wsRaw = t.wsRaw[:0]
 				if f.kind == fkObj {
 					f.ph = phKey
@@ -870,19 +870,19 @@ scan:
 	}
 }
 
-// flush 把 p[rs:end] 交给区域，返回新的 rs（-1）。
+// flush hands p[rs:end] to the region and returns the new rs (-1).
 func (t *Transformer) flush(p []byte, rs, end int) int {
 	if rs >= 0 && end > rs {
 		t.emitRegion(p[rs:end])
-		if t.dead && t.replaying == 0 { // 上限 / 预算超限：偏移定在第一个装不下的字节
+		if t.dead && t.replaying == 0 { // cap / budget overflow: pin the offset to the first byte that did not fit
 			t.fixOffset(t.scanBase + int64(rs) + int64(t.limitAt))
 		}
 	}
 	return -1
 }
 
-// valueStart 在派发帧里一个值的第一个字节到达时决定动作。
-// 返回 false 表示已 Bail。
+// valueStart decides the action when the first byte of a value arrives inside a dispatch frame.
+// Returns false when it bailed.
 func (t *Transformer) valueStart(f *frame, kind ValueKind) bool {
 	if f.kind == fkObj {
 		if f.ph != phValue {
@@ -896,7 +896,7 @@ func (t *Transformer) valueStart(f *frame, kind ValueKind) bool {
 			t.BailErr(ErrSyntax, "missing comma between array elements")
 			return false
 		}
-		// 数组元素开始
+		// start of an array element
 		f.idx++
 		t.elemWs = append(t.elemWs[:0], t.wsRaw...)
 		t.wsRaw = t.wsRaw[:0]
@@ -907,7 +907,7 @@ func (t *Transformer) valueStart(f *frame, kind ValueKind) bool {
 			return false
 		}
 	}
-	act := &t.pend // 指针：Action 有一百多字节，按值传会在派发热路径上反复拷贝
+	act := &t.pend // a pointer: Action is over a hundred bytes and passing it by value would copy it repeatedly on the dispatch hot path
 	t.pendSet = false
 	if act.kind == akProbe {
 		t.pend = t.cur().OnStart(t, kind)
@@ -918,7 +918,7 @@ func (t *Transformer) valueStart(f *frame, kind ValueKind) bool {
 	return t.apply(f, act, kind)
 }
 
-// apply 执行一个动作。
+// apply executes an action.
 func (t *Transformer) apply(f *frame, act *Action, kind ValueKind) bool {
 	isContainer := kind == KindObject || kind == KindArray
 	switch act.kind {
@@ -944,7 +944,7 @@ func (t *Transformer) apply(f *frame, act *Action, kind ValueKind) bool {
 		}
 		nf.hook = act.via
 		if nf.hook == nil {
-			nf.hook = f.hook // 子 hook 自己 Enter 的层仍归它
+			nf.hook = f.hook // a level the sub-hook entered itself stays with it
 		}
 		t.pushFrame(nf)
 		if !act.flat {
@@ -954,7 +954,7 @@ func (t *Transformer) apply(f *frame, act *Action, kind ValueKind) bool {
 				name = act.key
 				if name == "" {
 					name = t.Last()
-					raw = t.kvRaw // push 会拷贝进槽位
+					raw = t.kvRaw // push copies it into the slot
 				}
 			} else {
 				raw = t.elemWs
@@ -1021,7 +1021,7 @@ func (t *Transformer) apply(f *frame, act *Action, kind ValueKind) bool {
 	return false
 }
 
-// regPush 区域内进入一层容器：记下种类，文法阶段切到"期待 key / 期待值"。
+// regPush enters one container level inside a region: records its kind and switches the grammar phase to "expecting a key / value".
 func (t *Transformer) regPush(isArr bool) {
 	t.regN++
 	if t.regN <= 64 {
@@ -1041,7 +1041,7 @@ func (t *Transformer) regPush(isArr bool) {
 	}
 }
 
-// regPop 区域内闭合一层容器，返回回到父层后的阶段（父层是对象则期待 , 或 }，是数组则期待 , 或 ]）。
+// regPop closes one container level inside a region and returns the phase back in the parent (expecting , or } in an object, , or ] in an array).
 func (t *Transformer) regPop() regPhase {
 	t.regN--
 	n := t.regN
@@ -1074,7 +1074,7 @@ func (t *Transformer) beginRegion(target regionTarget, act *Action) {
 	t.capBuf = t.capBuf[:0]
 }
 
-// emitRegion 处理区域内的一段原始字节。
+// emitRegion handles one run of raw bytes inside a region.
 func (t *Transformer) emitRegion(b []byte) {
 	switch t.regT {
 	case rtOut:
@@ -1100,7 +1100,7 @@ func (t *Transformer) emitRegion(b []byte) {
 		if t.dead {
 			return
 		}
-		// 窗口之后的字节按新目标处理
+		// bytes after the window are handled according to the new target
 		t.emitRegion(rest)
 	}
 }
@@ -1122,7 +1122,7 @@ func (t *Transformer) capAppend(b []byte) {
 	t.capBuf = append(t.capBuf, b...)
 }
 
-// runPrefix 把前缀窗口交给协议，并按其返回切换区域目标。
+// runPrefix hands the prefix window to the protocol and switches the region target according to its answer.
 func (t *Transformer) runPrefix(complete bool) {
 	act, resume := t.cur().OnPrefix(t, t.capBuf, complete)
 	if t.dead {
@@ -1153,10 +1153,10 @@ func (t *Transformer) runPrefix(complete bool) {
 	t.capBuf = t.capBuf[:0]
 }
 
-// endRegion 区域结束：交付缓冲、写后缀。
+// endRegion ends a region: delivers the buffer and writes the suffix.
 func (t *Transformer) endRegion() {
 	if t.dead {
-		return // 缓冲超限等 Bail 已发生，不再把残缺数据交给协议
+		return // a Bail such as a buffer overflow already happened; do not hand truncated data to the protocol
 	}
 	switch t.regT {
 	case rtOut:
@@ -1191,10 +1191,10 @@ func (t *Transformer) endRegion() {
 	t.capBuf = t.capBuf[:0]
 }
 
-// onKeyDone key 闭合：派发 OnKey。
+// onKeyDone: the key is complete, dispatch OnKey.
 func (t *Transformer) onKeyDone() {
 	var key string
-	if t.keyEsc { // 带转义的 key：按 JSON 解码后再派发（原文仍由 kvRaw 保留）
+	if t.keyEsc { // an escaped key: decode as JSON before dispatching (kvRaw still holds the original)
 		k, ok := decodeKey(t.keyBuf)
 		if !ok {
 			t.BailErr(ErrSyntax, "invalid escape in key")
@@ -1206,7 +1206,7 @@ func (t *Transformer) onKeyDone() {
 			t.keys = new([keyCacheSize]string)
 		}
 		slot := &t.keys[hashKey(t.keyBuf)&(keyCacheSize-1)]
-		if *slot == string(t.keyBuf) { // 比较不分配
+		if *slot == string(t.keyBuf) { // the comparison does not allocate
 			key = *slot
 		} else {
 			key = string(t.keyBuf)
@@ -1229,7 +1229,7 @@ func (t *Transformer) onKeyDone() {
 		}
 		if !dup {
 			f.seen = append(f.seen, key)
-		} else { // DupKeysFirst：后面的同名 key 不派发，直接丢弃
+		} else { // DupKeysFirst: later occurrences of the same key are not dispatched, just dropped
 			t.pend = Skip()
 			t.pendSet = true
 			return
@@ -1242,7 +1242,7 @@ func (t *Transformer) onKeyDone() {
 	}
 }
 
-// afterValue 一个值（标量 / 字符串 / 容器）在派发帧里结束。
+// afterValue: a value (scalar / string / container) ended inside a dispatch frame.
 func (t *Transformer) afterValue() {
 	f := t.top()
 	if f == nil || t.dead {
@@ -1259,12 +1259,12 @@ func (t *Transformer) afterValue() {
 	}
 }
 
-// closeContainer 派发帧闭合。
+// closeContainer closes a dispatch frame.
 func (t *Transformer) closeContainer() {
 	f := t.top()
 	closeWs := append([]byte(nil), t.wsRaw...)
 	t.wsRaw = t.wsRaw[:0]
-	t.hookAt(len(t.frames) - 2).OnLeave(t) // 闭合回到发起 Enter 的一方
+	t.hookAt(len(t.frames) - 2).OnLeave(t) // the close goes back to whoever issued the Enter
 	if t.dead {
 		return
 	}
@@ -1276,7 +1276,7 @@ func (t *Transformer) closeContainer() {
 		}
 	}
 	if len(f.deferred) > 0 {
-		// 协议既没回放也没显式丢弃：这是协议逻辑漏洞，静默吞掉会产出语义不同的请求。
+		// The protocol neither replayed nor explicitly dropped them: a protocol bug, and swallowing it silently would produce a request with different meaning.
 		t.BailErr(ErrLeftoverDefer, "deferred items not released before the container closed")
 		return
 	}
@@ -1286,18 +1286,18 @@ func (t *Transformer) closeContainer() {
 	if t.depth == 0 {
 		t.rootDone = true
 		t.rootCloseWs = closeWs
-		return // 根的输出层在 Finish 里闭合（Tail 之后）
+		return // the root output level is closed in Finish (after Tail)
 	}
 	if !flat {
 		if !lazy {
-			t.w.Open() // 输入里存在的容器，输出里也要存在，哪怕是空的
+			t.w.Open() // a container present in the input must exist in the output, even empty
 		}
 		t.w.pop(closeWs)
 	}
 	t.afterValue()
 }
 
-// doRelease 回放当前派发帧里的 Defer 项：每一项重新经过 OnKey，按此刻的协议状态处理。
+// doRelease replays the Defer items of the current dispatch frame: each goes through OnKey again and is handled according to the protocol state of this moment.
 func (t *Transformer) doRelease() {
 	f := t.top()
 	if f == nil || len(f.deferred) == 0 {
@@ -1329,21 +1329,21 @@ func (t *Transformer) replayKV(kv DeferredKV) {
 	t.replaying++
 	t.scan(kv.Raw)
 	if t.st == sInScalar {
-		t.scan([]byte{' '}) // 补一个分隔符收尾标量
+		t.scan([]byte{' '}) // a separator to terminate a scalar
 	}
 	t.replaying--
-	t.wsRaw = t.wsRaw[:0] // 上面的补位空格不属于原文
+	t.wsRaw = t.wsRaw[:0] // the padding space above is not part of the original
 }
 
-// scanStrUTF8 开启 UTF-8 校验时的字符串体扫描：ASCII 段走 SWAR，≥ 0x80 的字节逐个过 RFC 3629 状态机
-// （序列可以跨块，状态留在 t.u8）。返回下一个需要外层处理的 ASCII 字节位置（引号 / 反斜杠 / 控制字符）或 len(p)；
-// 序列非法时 Bail。
+// scanStrUTF8 scans a string body with UTF-8 validation on: ASCII runs use SWAR, bytes >= 0x80 go one by one through the RFC 3629
+// state machine (a sequence may span chunks, the state stays in t.u8). Returns the position of the next ASCII byte the caller must
+// handle (quote / backslash / control character) or len(p); bails on an invalid sequence.
 func (t *Transformer) scanStrUTF8(p []byte, i int) int {
 	for i < len(p) {
 		c := p[i]
 		if c >= 0x80 {
 			if t.u8.need == 0 {
-				// 序列开头且整个序列都在本块：查表一次验完，不进逐字节状态机
+				// start of a sequence that lies entirely in this chunk: validated with one table lookup, skipping the byte state machine
 				f := utf8First[c]
 				sz := int(f & 7)
 				if sz == 0 {
@@ -1367,7 +1367,7 @@ func (t *Transformer) scanStrUTF8(p []byte, i int) int {
 					continue
 				}
 			}
-			if !t.u8.step(c) { // 跨块的序列：逐字节
+			if !t.u8.step(c) { // a sequence split across chunks: byte by byte
 				t.BailErr(ErrSyntax, "invalid UTF-8 sequence")
 				return i
 			}
@@ -1386,7 +1386,7 @@ func (t *Transformer) scanStrUTF8(p []byte, i int) int {
 	return i
 }
 
-// hashKey 是 key 字节的 FNV-1a 哈希（key 通常很短，比通用 map 的哈希与探测便宜）。
+// hashKey is the FNV-1a hash of the key bytes (keys are usually short; cheaper than a general map's hashing and probing).
 func hashKey(b []byte) uint32 {
 	h := uint32(2166136261)
 	for _, c := range b {
@@ -1395,7 +1395,7 @@ func hashKey(b []byte) uint32 {
 	return h
 }
 
-// decodeKey 解码带转义的 key。独立成函数是为了不让 onKeyDone 里的 key 变量因取地址而逃逸到堆上。
+// decodeKey decodes an escaped key. It is a separate function so the key variable in onKeyDone does not escape to the heap by having its address taken.
 func decodeKey(raw []byte) (string, bool) {
 	q := make([]byte, 0, len(raw)+2)
 	q = append(q, '"')

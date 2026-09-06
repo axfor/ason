@@ -12,7 +12,7 @@ func TestStopMapping(t *testing.T) {
 		got := xform(in, cs)
 		var m map[string]any
 		if err := json.Unmarshal([]byte(got), &m); err != nil {
-			t.Fatalf("chunk=%d 非法 JSON: %v\n%s", cs, err, got)
+			t.Fatalf("chunk=%d invalid JSON: %v\n%s", cs, err, got)
 		}
 		ss, ok := m["stop_sequences"].([]any)
 		if !ok || len(ss) != 2 || ss[0] != "END" || ss[1] != "STOP" {
@@ -20,7 +20,7 @@ func TestStopMapping(t *testing.T) {
 			continue
 		}
 		if cs == 4096 {
-			fmt.Printf("  stop 映射 ✓ %s\n", got)
+			fmt.Printf("  stop mapped ✓ %s\n", got)
 		}
 	}
 }

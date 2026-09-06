@@ -1,5 +1,5 @@
-// 回放：body 先于 kind 到达时 Defer 起来（有上限），见到 kind 后 Release 重新派发——不对字段顺序做假设。
-// kind 为 note 时 body 改名为 text，否则原样。
+// Replay: when body arrives before kind it is Deferred (bounded); once kind is seen Release dispatches it again, with no assumption about field order.
+// When kind is note, body is renamed to text; otherwise it stays as is.
 //
 //	echo '{"body":"be brief","kind":"note"}' | go run ./examples/defer-replay
 package main

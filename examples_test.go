@@ -9,8 +9,8 @@ import (
 	"testing"
 )
 
-// 每个示例程序都编译并用固定输入运行一遍，stdout 与 examples/testdata/<name>.golden 逐字节比对。
-// 更新黄金文件：UPDATE_GOLDEN=1 go test -run TestExamplesGolden .
+// Every example program is built and run with a fixed input; stdout is compared byte for byte with examples/testdata/<name>.golden.
+// Update the golden files with: UPDATE_GOLDEN=1 go test -run TestExamplesGolden .
 func TestExamplesGolden(t *testing.T) {
 	if testing.Short() {
 		t.Skip("-short")
@@ -32,26 +32,26 @@ func TestExamplesGolden(t *testing.T) {
 	}
 	dirs, err := filepath.Glob("examples/*/main.go")
 	if err != nil || len(dirs) == 0 {
-		t.Fatalf("找不到示例: %v", err)
+		t.Fatalf("examples not found: %v", err)
 	}
 	bin := t.TempDir()
 	for _, mainGo := range dirs {
 		name := filepath.Base(filepath.Dir(mainGo))
 		in, ok := inputs[name]
 		if !ok {
-			t.Fatalf("示例 %s 没有登记输入（examples_test.go 的 inputs）", name)
+			t.Fatalf("example %s has no registered input (inputs in examples_test.go)", name)
 		}
 		exe := filepath.Join(bin, name)
 		build := exec.Command("go", "build", "-o", exe, "./examples/"+name)
 		if out, err := build.CombinedOutput(); err != nil {
-			t.Fatalf("编译 %s 失败: %v\n%s", name, err, out)
+			t.Fatalf("building %s failed: %v\n%s", name, err, out)
 		}
 		for _, chunk := range []string{"1", "3", "4096"} {
 			cmd := exec.Command(exe, "-chunk", chunk)
 			cmd.Stdin = strings.NewReader(in)
 			var stdout, stderr bytes.Buffer
 			cmd.Stdout, cmd.Stderr = &stdout, &stderr
-			_ = cmd.Run() // fallback 示例以 1 退出属于预期
+			_ = cmd.Run() // the fallback example exits with 1 by design
 			golden := filepath.Join("examples", "testdata", name+".golden")
 			if os.Getenv("UPDATE_GOLDEN") != "" && chunk == "1" {
 				if err := os.WriteFile(golden, stdout.Bytes(), 0o644); err != nil {
@@ -60,10 +60,10 @@ func TestExamplesGolden(t *testing.T) {
 			}
 			want, err := os.ReadFile(golden)
 			if err != nil {
-				t.Fatalf("%s: 缺少黄金文件 %s（UPDATE_GOLDEN=1 生成）", name, golden)
+				t.Fatalf("%s: golden file %s missing (generate with UPDATE_GOLDEN=1)", name, golden)
 			}
 			if !bytes.Equal(stdout.Bytes(), want) {
-				t.Fatalf("%s chunk=%s 输出与黄金文件不同:\n got  %q\n want %q\n stderr %s", name, chunk, stdout.String(), want, stderr.String())
+				t.Fatalf("%s chunk=%s output differs from the golden file:\n got  %q\n want %q\n stderr %s", name, chunk, stdout.String(), want, stderr.String())
 			}
 		}
 	}

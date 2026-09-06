@@ -6,8 +6,8 @@ import (
 	"testing"
 )
 
-// 任意字节流（合法 JSON 的随机变异、随机字节、随机截断、随机分块）喂给每个协议，
-// 只要求：不 panic、Finish 之后要么给出合法输出要么明确 Bail。WASM 里 panic 等于 500。
+// Arbitrary byte streams (random mutations of valid JSON, random bytes, random truncation, random chunking) are fed to every protocol;
+// the only requirements: no panic, and after Finish either valid output or an explicit Bail. A panic in WASM means a 500.
 func TestNoPanicOnGarbage(t *testing.T) {
 	seeds := []string{
 		`{"model":"m","messages":[{"role":"system","content":"S"},{"role":"user","content":[{"type":"text","text":"a"},{"type":"image_url","image_url":{"url":"data:image/png;base64,QUJD"}}]},{"role":"assistant","content":"x","tool_calls":[{"id":"c","type":"function","function":{"name":"f","arguments":"{}"}}]},{"role":"tool","tool_call_id":"c","content":"r"}],"tools":[{"type":"function","function":{"name":"f","parameters":{"type":"object"}}}],"tool_choice":"auto","stream":true,"max_tokens":10,"temperature":0.5,"stop":["x"],"reasoning_effort":"low","stream_options":{"include_usage":true},"preserve_thinking":false,"thinking":{"type":"enabled"},"reasoning_max_tokens":5}`,
@@ -33,24 +33,24 @@ func TestNoPanicOnGarbage(t *testing.T) {
 	mutate := func(s string) string {
 		b := []byte(s)
 		switch r.Intn(6) {
-		case 0: // 截断
+		case 0: // truncate
 			return string(b[:r.Intn(len(b)+1)])
-		case 1: // 随机改一个字节
+		case 1: // change one random byte
 			if len(b) > 0 {
 				b[r.Intn(len(b))] = byte(r.Intn(256))
 			}
 			return string(b)
-		case 2: // 插入结构字符
+		case 2: // insert a structural character
 			i := r.Intn(len(b) + 1)
 			return string(b[:i]) + string([]byte{`{}[]",:\`[r.Intn(8)]}) + string(b[i:])
-		case 3: // 删除一段
+		case 3: // delete a span
 			i := r.Intn(len(b) + 1)
 			j := i + r.Intn(8)
 			if j > len(b) {
 				j = len(b)
 			}
 			return string(b[:i]) + string(b[j:])
-		case 4: // 纯随机字节
+		case 4: // pure random bytes
 			n := r.Intn(64)
 			out := make([]byte, n)
 			for k := range out {
@@ -72,7 +72,7 @@ func TestNoPanicOnGarbage(t *testing.T) {
 		func() {
 			defer func() {
 				if p := recover(); p != nil {
-					t.Fatalf("第 %d 例 panic: %v\n输入: %q chunk=%d", i, p, in, chunk)
+					t.Fatalf("case %d panicked: %v\ninput: %q chunk=%d", i, p, in, chunk)
 				}
 			}()
 			tr := mk()
@@ -93,5 +93,5 @@ func TestNoPanicOnGarbage(t *testing.T) {
 			valid++
 		}()
 	}
-	t.Logf("随机变异 %d 例：放行 %d，回落 %d，panic 0", N, valid, bailed)
+	t.Logf("%d random mutations: passed %d, bailed %d, panics 0", N, valid, bailed)
 }

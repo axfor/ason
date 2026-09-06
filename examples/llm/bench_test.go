@@ -5,8 +5,8 @@ import (
 	"testing"
 )
 
-// 吞吐基准：长字符串直通、结构密集（大量小 kv 与标量）、多模态 base64。
-// 用于确认逐字节语法校验没有让扫描器变慢。
+// Throughput benchmarks: long strings passing through, dense structure (many small kv pairs and scalars), multimodal base64.
+// They confirm byte-by-byte syntax validation did not slow the scanner down.
 func benchBody(kind string) []byte {
 	switch kind {
 	case "longstr":
@@ -22,8 +22,8 @@ func benchBody(kind string) []byte {
 		}
 		sb.WriteString(`],"stream":true}`)
 		return []byte(sb.String())
-	default: // base64 图片
-		return []byte(`{"model":"m","messages":[{"role":"user","content":[{"type":"text","text":"看图"},{"type":"image_url","image_url":{"url":"data:image/png;base64,` + strings.Repeat("iVBORw0KGgo=", 96<<10) + `"}}]}],"stream":true}`)
+	default: // base64 image
+		return []byte(`{"model":"m","messages":[{"role":"user","content":[{"type":"text","text":"describe"},{"type":"image_url","image_url":{"url":"data:image/png;base64,` + strings.Repeat("iVBORw0KGgo=", 96<<10) + `"}}]}],"stream":true}`)
 	}
 }
 

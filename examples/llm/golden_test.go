@@ -12,14 +12,14 @@ import (
 	"testing"
 )
 
-// 黄金差分：testdata/*.jsonl.gz 由 Higress ai-proxy 的官方（整体缓冲）实现一次性生成，每条记录是
-// 输入 + 配置 + 官方输出（或官方失败）。这里用同样的配置构造流式协议，在多种分块尺寸下运行，
-// 按 Higress 差分 harness 的规则逐字段比对：数字按字面量比（UseNumber），只有 tools 的 parameters 子树
-// 按数值比（官方经 map 往返会重排 key 与数字，流式原样透传，语义相同）。
+// Golden differential: testdata/*.jsonl.gz was generated once by the buffered implementation of Higress ai-proxy; each record
+// holds input + configuration + buffered output (or a buffered failure). The streaming protocol is built with the same
+// configuration, run at several chunk sizes and compared field by field by the rules of the Higress differential harness: numbers by
+// literal (UseNumber), except the tools parameters subtree by numeric value (the buffered map round trip reorders keys and reformats numbers; streaming passes it through verbatim with the same meaning).
 //
-// 允许的例外与 harness 一致：
-//   - 官方失败而流式放行：只允许官方失败原因是"被丢弃字段的类型错误"（记录里 lenient=true）；
-//   - 官方成功而流式判定不支持：只允许已知的回落原因（重复 key、官方会跳过的 part、http 图片、透传路径的 developer role 等）。
+// Allowed exceptions match the harness:
+//   - buffered failed but streaming passed: only when the buffered failure is a type error in a dropped field (lenient=true in the record);
+//   - buffered succeeded but streaming bailed: only known fallback reasons (duplicate keys, parts the buffered path skips, http images, a developer role on the passthrough path, ...).
 
 type goldenRec struct {
 	Suite     string         `json:"suite"`
@@ -55,7 +55,7 @@ func loadGolden(t *testing.T, suite string) []goldenRec {
 	return recs
 }
 
-// ---- 与官方一致的配置 ----
+// ---- configuration matching the buffered path ----
 
 var (
 	oaiMapping        = map[string]string{"m1": "mapped-1", "gpt-*": "g", "~^re(.*)$": "x$1", "*": "fallback"}
@@ -65,7 +65,7 @@ var (
 	geminiThinking    = map[string]bool{"gemini-2.5-pro": true, "gemini-2.5-flash": true, "gemini-2.5-flash-lite": true}
 )
 
-// getMappedModel 复刻官方的 modelMapping 规则：精确 → 前缀（k*）→ 正则（~re，可带 $1）→ 通配 * → 原样。
+// getMappedModel reproduces the buffered modelMapping rules: exact → prefix (k*) → regexp (~re, $1 allowed) → wildcard * → unchanged.
 func getMappedModel(model string, mapping map[string]string) string {
 	if v, ok := mapping[model]; ok {
 		return v
@@ -74,7 +74,7 @@ func getMappedModel(model string, mapping map[string]string) string {
 	for k := range mapping {
 		keys = append(keys, k)
 	}
-	sort.Strings(keys) // 官方按 map 顺序遍历；这些映射表里的模式互不重叠，顺序不影响结果
+	sort.Strings(keys) // the buffered path iterates a map; the patterns in these tables do not overlap, so the order does not matter
 	for _, k := range keys {
 		v := mapping[k]
 		if k == "*" {
@@ -202,7 +202,7 @@ func newFor(rec goldenRec) *Transformer {
 	panic("unknown suite " + rec.Suite)
 }
 
-// allowedFallback：官方成功而流式判定不支持时，各套件允许的已知原因。
+// allowedFallback: the known reasons each suite allows when the buffered path succeeded but streaming bailed.
 func allowedFallback(rec goldenRec, why string) bool {
 	chat, _ := rec.Cfg["chat"].(bool)
 	has := func(ss ...string) bool {
@@ -215,17 +215,17 @@ func allowedFallback(rec goldenRec, why string) bool {
 	}
 	switch rec.Suite {
 	case "claude":
-		return has("duplicate key", "官方会跳过", "panic")
+		return has("duplicate key", "the buffered path skips", "panic")
 	case "gemini", "qwen_native":
 		return has("duplicate key", "panic")
 	case "openai":
 		return chat && hasDeveloper(rec.In)
-	default: // 变体
-		return chat && hasDeveloper(rec.In) || has("不是对象", "messages 不是数组", "重复 key", "duplicate key")
+	default: // variants
+		return chat && hasDeveloper(rec.In) || has("is not an object", "messages is not an array", "duplicate key")
 	}
 }
 
-// ---- 比对（与 harness 相同）----
+// ---- comparison (same as the harness) ----
 
 func decodeMap(b []byte) (map[string]any, error) {
 	dec := json.NewDecoder(bytes.NewReader(b))
@@ -282,7 +282,7 @@ func diffMaps(a, b map[string]any) string {
 		va, _ := json.Marshal(a[k])
 		vb, _ := json.Marshal(b[k])
 		if string(va) != string(vb) {
-			out += fmt.Sprintf("[%s] 官方=%s 流式=%s  ", k, va, vb)
+			out += fmt.Sprintf("[%s] buffered=%s streaming=%s  ", k, va, vb)
 		}
 	}
 	return out
@@ -304,7 +304,7 @@ func runStream(tr *Transformer, in string, chunk int) (map[string]any, bool, str
 	}
 	m, err := decodeMap(out)
 	if err != nil {
-		return nil, false, "输出不是合法 JSON: " + err.Error()
+		return nil, false, "output is not valid JSON: " + err.Error()
 	}
 	return m, true, ""
 }
@@ -313,7 +313,7 @@ func trunc(s string, n int) string {
 	if len(s) <= n {
 		return s
 	}
-	return s[:n-1] + "…"
+	return s[:n-1] + "..."
 }
 
 func TestGolden(t *testing.T) {
@@ -326,7 +326,7 @@ func TestGolden(t *testing.T) {
 			if rec.OK {
 				var err error
 				if off, err = decodeMap([]byte(rec.Out)); err != nil {
-					t.Fatalf("%s/%s: 黄金输出不是合法 JSON: %v", suite, rec.Name, err)
+					t.Fatalf("%s/%s: golden output is not valid JSON: %v", suite, rec.Name, err)
 				}
 			}
 			for _, cs := range []int{1, 7, 64, 4096} {
@@ -336,7 +336,7 @@ func TestGolden(t *testing.T) {
 						offFail++
 					}
 					if sok && !rec.Lenient {
-						t.Fatalf("%s/%s chunk=%d: 官方失败但流式放行\n输入 %s", suite, rec.Name, cs, trunc(rec.In, 300))
+						t.Fatalf("%s/%s chunk=%d: buffered failed but streaming passed\ninput %s", suite, rec.Name, cs, trunc(rec.In, 300))
 					}
 					if sok && cs == 1 {
 						lenient++
@@ -345,13 +345,13 @@ func TestGolden(t *testing.T) {
 				}
 				if rec.NeedFetch {
 					if sok {
-						t.Fatalf("%s/%s chunk=%d: 含 http 图片应回落却放行", suite, rec.Name, cs)
+						t.Fatalf("%s/%s chunk=%d: an http image should fall back but passed", suite, rec.Name, cs)
 					}
 					continue
 				}
 				if !sok {
 					if !allowedFallback(rec, why) {
-						t.Fatalf("%s/%s chunk=%d: 意外回落: %s\n输入 %s", suite, rec.Name, cs, why, trunc(rec.In, 300))
+						t.Fatalf("%s/%s chunk=%d: unexpected fallback: %s\ninput %s", suite, rec.Name, cs, why, trunc(rec.In, 300))
 					}
 					if cs == 1 {
 						fallback++
@@ -366,13 +366,13 @@ func TestGolden(t *testing.T) {
 					}
 				}
 				if d := diffMaps(off, str); d != "" {
-					t.Fatalf("%s/%s chunk=%d 与官方不一致: %s\n输入 %s", suite, rec.Name, cs, d, trunc(rec.In, 300))
+					t.Fatalf("%s/%s chunk=%d differs from the buffered path: %s\ninput %s", suite, rec.Name, cs, d, trunc(rec.In, 300))
 				}
 				if cs == 1 {
 					same++
 				}
 			}
 		}
-		t.Logf("%-12s %d 条：一致 %d，官方失败 %d（其中丢弃字段类型错误、流式放行 %d），已知回落 %d，不一致 0", suite, len(recs), same, offFail, lenient, fallback)
+		t.Logf("%-12s %d records: identical %d, buffered failed %d (of which dropped-field type errors passed by streaming %d), known fallbacks %d, mismatches 0", suite, len(recs), same, offFail, lenient, fallback)
 	}
 }

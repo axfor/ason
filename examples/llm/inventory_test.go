@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// 逐字段探测：进去了、被拦了、还是被静默丢了
+// Field by field: mapped, rejected, or silently dropped
 func TestFieldInventory(t *testing.T) {
 	fields := []struct{ name, frag string }{
 		{"model", `"model":"m"`},
@@ -28,7 +28,7 @@ func TestFieldInventory(t *testing.T) {
 		{"logprobs", `"logprobs":true`},
 		{"stream_options", `"stream_options":{"include_usage":true}`},
 	}
-	fmt.Println("  字段                 结果")
+	fmt.Println("  field                result")
 	fmt.Println("  ------------------   ----------------------------------")
 	for _, f := range fields {
 		in := `{` + f.frag + `,"messages":[{"role":"user","content":"U"}]}`
@@ -41,11 +41,11 @@ func TestFieldInventory(t *testing.T) {
 		json.Unmarshal([]byte(out), &m)
 		switch {
 		case bad:
-			fmt.Printf("  %-18s   拦截 → 回落 (%s)\n", f.name, why)
+			fmt.Printf("  %-18s   rejected → fallback (%s)\n", f.name, why)
 		case hasAny(m, f.name, claudeName(f.name)):
-			fmt.Printf("  %-18s   ✓ 已映射\n", f.name)
+			fmt.Printf("  %-18s   ✓ mapped\n", f.name)
 		default:
-			fmt.Printf("  %-18s   丢弃（Claude 无此字段，与官方一致）\n", f.name)
+			fmt.Printf("  %-18s   dropped (no Claude counterpart, as on the buffered path)\n", f.name)
 		}
 	}
 }

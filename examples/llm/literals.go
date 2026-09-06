@@ -1,6 +1,6 @@
 package llm
 
-// 协议热路径上的常量字节串：包级变量，避免每次回调都分配。
+// Constant byte strings on the protocol hot paths: package-level variables so no callback allocates them.
 var (
 	lit0  = []byte(`"`)
 	lit1  = []byte("data:")

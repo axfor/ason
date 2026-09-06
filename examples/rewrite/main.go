@@ -1,4 +1,4 @@
-// 原位改写：KeyProbe 捕获顶层 key，回调里决定替换值；其余字节直通，与 sjson 原地改写逐字节一致。
+// In-place rewrite: KeyProbe captures top-level keys and the callback decides the replacement; every other byte passes through, byte-identical to sjson's in-place rewrite.
 //
 //	echo '{"items":[{"k":"v"}],"owner":"team/42"}' | go run ./examples/rewrite
 package main

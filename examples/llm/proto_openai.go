@@ -2,50 +2,50 @@ package llm
 
 import "encoding/json"
 
-// OpenAI 兼容族的流式透传协议。
+// Streaming passthrough protocol of the OpenAI-compatible family.
 //
-// 对应官方 defaultTransformRequestBody + normalizeOpenAiRequestBody + convertDeveloperRoleToSystem：
-// 字节透传，只在几处动手——改写 model、必要时补 stream_options.include_usage、
-// 发现 developer role 时回落（官方那条路径会把整个请求经 struct 重新序列化，流式无法复刻）。
+// Mirrors the buffered defaultTransformRequestBody + normalizeOpenAiRequestBody + convertDeveloperRoleToSystem:
+// bytes pass through, with only a few touches: rewrite model, add stream_options.include_usage when required,
+// and fall back on a developer role (that buffered path re-serializes the whole request through a struct, which streaming cannot reproduce).
 //
-// Qwen 兼容模式 / 智谱 / OpenRouter 在此之上各有一点自己的逻辑，以 Variant 手写接入
-// （proto_openai_variants.go）——它们是代码，不是规则表。
+// Qwen compatible mode / Zhipu / OpenRouter each add a little logic of their own on top, plugged in as a hand-written Variant
+// (proto_openai_variants.go): they are code, not a rule table.
 type OpenAIOptions struct {
-	// MapModel 复刻 getMappedModel：找不到映射就原样返回，永不出错。
+	// MapModel reproduces getMappedModel: returns the input unchanged when no mapping matches, never fails.
 	MapModel func(model string) string
-	// ModelOnlyIfPresent：官方只在 model 存在时才 sjson 改写（Qwen 兼容模式）；
-	// 默认路径缺失时会补一个 "model":<映射空串的结果>。
+	// ModelOnlyIfPresent: the buffered path only rewrites with sjson when model is present (Qwen compatible mode);
+	// the default path adds "model":<result of mapping the empty string> when it is missing.
 	ModelOnlyIfPresent bool
-	// DetectStream：chat / videos / video_remix 需要读取 stream（副作用由集成层施加）。
+	// DetectStream: chat / videos / video_remix need to read stream (the side effects are applied by the integration layer).
 	DetectStream bool
-	// NormalizeUsage：chat / completion 且未禁用统计时，stream 为真则补 include_usage。
+	// NormalizeUsage: chat / completion with usage statistics enabled add include_usage when stream is true.
 	NormalizeUsage bool
-	// DeveloperRoleSupported 为 false 时见到 developer role 回落。
+	// DeveloperRoleSupported false means a developer role falls back.
 	DeveloperRoleSupported bool
-	// CheckMessages：apiName 为 chat 时才需要进入 messages 检查 role。
+	// CheckMessages: only chat needs to enter messages and check role.
 	CheckMessages bool
-	// Variant：provider 特有逻辑；nil = 纯默认路径。
+	// Variant: provider-specific logic; nil = pure default path.
 	Variant OpenAIVariant
 }
 
-// OpenAIVariant 是 OpenAI 兼容族里某个 provider 的特有逻辑。
+// OpenAIVariant is the provider-specific logic of one member of the OpenAI-compatible family.
 type OpenAIVariant interface {
-	// TopKey 决定一个顶层 key 的动作；ok=false 表示交给基础协议。
+	// TopKey decides the action for a top-level key; ok=false hands it to the base protocol.
 	TopKey(t *Transformer, key string) (Action, bool)
-	// TopValue 接收 Variant 自己 Capture 的顶层值。
+	// TopValue receives the top-level values the Variant Captured itself.
 	TopValue(t *Transformer, key string, raw []byte)
-	// NeedReasoningScan：是否需要知道 messages[].reasoning_content 有没有非空的。
+	// NeedReasoningScan: whether it needs to know if any messages[].reasoning_content is non-empty.
 	NeedReasoningScan() bool
-	// Tail 在末尾输出 provider 特有的字段。
+	// Tail writes the provider-specific fields at the end.
 	Tail(t *Transformer, base *OpenAIState)
 }
 
-// OpenAIState 是基础协议暴露给 Variant 的状态。
+// OpenAIState is the state the base protocol exposes to a Variant.
 type OpenAIState struct {
 	ModelSeen     bool
-	Model         string // 原始 model（ModelSeen 为真时有效）
-	Mapped        string // 映射后的 model（ModelSeen 为真时有效）
-	ReasoningSeen bool   // 某条 message 的 reasoning_content 非空（gjson String() != ""）
+	Model         string // original model (valid when ModelSeen)
+	Mapped        string // mapped model (valid when ModelSeen)
+	ReasoningSeen bool   // some message has a non-empty reasoning_content (gjson String() != "")
 }
 
 type openaiProto struct {
@@ -57,11 +57,11 @@ type openaiProto struct {
 	streamOpts     []byte
 	streamOptsSeen bool
 	scanReasoning  bool
-	msgRCSeen      bool     // 当前 message 里已见过 reasoning_content（gjson 只看第一个）
-	movedTop       []string // 被 Capture 后挪到末尾输出的顶层 key：再出现就无法保持"后者覆盖"的顺序
+	msgRCSeen      bool     // reasoning_content already seen in the current message (gjson only looks at the first)
+	movedTop       []string // top-level keys Captured and moved to the end: a second occurrence cannot keep the last-wins order
 }
 
-// NewOpenAI 构造 OpenAI 兼容透传协议的转换器。
+// NewOpenAI builds the transformer of the OpenAI-compatible passthrough protocol.
 func NewOpenAI(opt OpenAIOptions) *Transformer {
 	if opt.MapModel == nil {
 		opt.MapModel = func(m string) string { return m }
@@ -71,7 +71,7 @@ func NewOpenAI(opt OpenAIOptions) *Transformer {
 		p.scanReasoning = opt.Variant.NeedReasoningScan()
 	}
 	t := NewTransformer(p)
-	t.DupKeyBail = false // sjson 语义：重复 key 只动第一个，其余原样保留
+	t.DupKeyBail = false // sjson semantics: only the first duplicate key is touched, the rest stay verbatim
 	return t
 }
 
@@ -83,9 +83,9 @@ func (p *openaiProto) enterMessages() bool {
 	return (p.opt.CheckMessages && !p.opt.DeveloperRoleSupported) || p.scanReasoning
 }
 
-// moved 记录一个被挪到末尾输出的顶层 key。
-// sjson 对重复 key 只动第一个、其余原样保留，输出里后者仍在后面；
-// 而我们把第一个挪到末尾后，"后者覆盖前者"的顺序就反了——这种输入只能回落。
+// moved records a top-level key that was moved to the end of the output.
+// sjson touches only the first of duplicate keys and keeps the rest verbatim, so the later ones still come after it;
+// once the first has been moved to the end, the last-wins order is reversed, and such input can only fall back.
 func (p *openaiProto) moved(t *Transformer, key string, a Action) Action {
 	if a.IsCapture() {
 		p.movedTop = append(p.movedTop, key)
@@ -99,7 +99,7 @@ func (p *openaiProto) OnKey(t *Transformer) Action {
 		k := t.Last()
 		for _, m := range p.movedTop {
 			if m == k {
-				return Bail("顶层重复 key " + k + " 已被提前捕获，无法保持后者覆盖的顺序")
+				return Bail("top-level duplicate key " + k + " was already captured, the last-wins order cannot be kept")
 			}
 		}
 		if p.opt.Variant != nil {
@@ -110,12 +110,12 @@ func (p *openaiProto) OnKey(t *Transformer) Action {
 		switch t.Last() {
 		case "model":
 			if p.st.ModelSeen {
-				return Pass() // sjson 只改第一个
+				return Pass() // sjson only rewrites the first
 			}
 			return Capture(4 << 10)
 		case "stream":
-			// 副作用（Accept / isStreaming）要 DetectStream，include_usage 的判定要 NormalizeUsage；
-			// 两者任一需要就得看一眼 stream 的值。
+			// the side effects (Accept / isStreaming) need DetectStream, the include_usage decision needs NormalizeUsage;
+			// either of them means the value of stream has to be looked at.
 			if (!p.opt.DetectStream && !p.opt.NormalizeUsage) || p.streamSeen {
 				return Pass()
 			}
@@ -128,7 +128,7 @@ func (p *openaiProto) OnKey(t *Transformer) Action {
 		case "messages":
 			if p.enterMessages() {
 				if p.scanReasoning {
-					return Probe() // gjson 对非数组的 Array() 语义特殊，非数组回落
+					return Probe() // gjson's Array() has special semantics for non-arrays: fall back on those
 				}
 				return Enter().Lenient()
 			}
@@ -164,17 +164,17 @@ func (p *openaiProto) OnStart(t *Transformer, kind ValueKind) Action {
 	switch t.Depth() {
 	case 1: // messages
 		if kind != KindArray {
-			return Bail("messages 不是数组，gjson Array() 语义未复刻")
+			return Bail("messages is not an array, gjson Array() semantics not reproduced")
 		}
 		return Enter()
-	case 3: // reasoning_content：只需要知道是否非空，不缓冲
+	case 3: // reasoning_content: only whether it is non-empty matters, nothing is buffered
 		switch kind {
 		case KindString:
 			return Prefix(1)
 		case KindNull, KindBool, KindNumber:
 			return Observe(64)
 		default:
-			p.st.ReasoningSeen = true // 对象/数组的 String() 是原始文本，非空
+			p.st.ReasoningSeen = true // String() of an object / array is its raw text, non-empty
 			return Pass()
 		}
 	}
@@ -195,18 +195,18 @@ func (p *openaiProto) OnValue(t *Transformer, raw []byte) {
 		}
 		switch k {
 		case "model":
-			// gjson.String() 对非字符串会给出字符串表示再被 sjson 写回成字符串——类型会变。
-			// 这种输入极罕见，回落交给官方处理，不在这里复刻。
+			// gjson.String() renders a non-string as text and sjson writes it back as a string, changing the type.
+			// Such input is extremely rare; fall back to the buffered path instead of reproducing it here.
 			s, ok := jsonUnquote(raw)
 			if !ok {
-				t.Bail("model 不是字符串")
+				t.Bail("model is not a string")
 				return
 			}
 			p.st.ModelSeen = true
 			p.st.Model = s
 			p.st.Mapped = p.opt.MapModel(s)
 			w := t.W()
-			w.KeyRaw(t.KeyRaw()) // 保留原文的 "model": 写法，与 sjson 原地改写一致
+			w.KeyRaw(t.KeyRaw()) // keep the original spelling of "model":, as sjson's in-place rewrite does
 			w.JSONString(p.st.Mapped)
 		case "stream":
 			p.streamSeen = true
@@ -219,7 +219,7 @@ func (p *openaiProto) OnValue(t *Transformer, raw []byte) {
 		switch t.Last() {
 		case "role":
 			if s, ok := jsonUnquote(raw); ok && s == "developer" {
-				t.Bail("developer role：官方会把整个请求经 struct 重新序列化，流式无法等价复刻")
+				t.Bail("developer role: the buffered path re-serializes the whole request through a struct, not reproduced by streaming")
 			}
 		case "reasoning_content":
 			if string(raw) != "null" {
@@ -237,7 +237,7 @@ func (p *openaiProto) OnPrefix(t *Transformer, raw []byte, complete bool) (Actio
 		t.W().KeyRaw(t.KeyRaw())
 		return Pass().Wrap(lit0, lit0), 0
 	}
-	return Bail("意外的 Prefix: " + t.PathString()), 0
+	return Bail("unexpected Prefix: " + t.PathString()), 0
 }
 
 func (p *openaiProto) OnLeave(t *Transformer) {}
@@ -245,7 +245,7 @@ func (p *openaiProto) OnLeave(t *Transformer) {}
 func (p *openaiProto) Tail(t *Transformer) {
 	w := t.W()
 	if !p.st.ModelSeen && !p.opt.ModelOnlyIfPresent {
-		// sjson.SetBytes 在 model 缺失时会补一个（映射空串的结果）
+		// sjson.SetBytes adds a model when it is missing (the result of mapping the empty string)
 		w.Key("model")
 		w.JSONString(p.opt.MapModel(""))
 	}
@@ -270,10 +270,10 @@ func (p *openaiProto) Tail(t *Transformer) {
 		w.RawString(`{"include_usage":true}`)
 		return
 	}
-	// 已有 stream_options：只在缺 include_usage 时追加（gjson Exists 语义）
+	// stream_options present: only append when include_usage is missing (gjson Exists semantics)
 	var m map[string]json.RawMessage
 	if err := json.Unmarshal(p.streamOpts, &m); err != nil || m == nil {
-		t.Bail("stream_options 不是对象，sjson 的处理方式未复刻")
+		t.Bail("stream_options is not an object, sjson's handling not reproduced")
 		return
 	}
 	w.Key("stream_options")
@@ -281,7 +281,7 @@ func (p *openaiProto) Tail(t *Transformer) {
 		w.Raw(p.streamOpts)
 		return
 	}
-	body := p.streamOpts[:len(p.streamOpts)-1] // 去掉 }
+	body := p.streamOpts[:len(p.streamOpts)-1] // drop the closing }
 	w.Raw(body)
 	if len(m) > 0 {
 		w.Byte(',')
@@ -289,7 +289,7 @@ func (p *openaiProto) Tail(t *Transformer) {
 	w.RawString(`"include_usage":true}`)
 }
 
-// gjsonStringNonEmpty 复刻 gjson.Result.String() != ""：只有 null 与 "" 是空。
+// gjsonStringNonEmpty reproduces gjson.Result.String() != "": only null and "" are empty.
 func gjsonStringNonEmpty(raw []byte) bool {
 	return len(raw) > 0 && string(raw) != "null" && string(raw) != `""`
 }

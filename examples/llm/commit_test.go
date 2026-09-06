@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// 提交点之内发现不支持 → 调用方可干净回落（未发出任何字节）
+// Unsupported shape found inside the commit window → the caller can fall back cleanly (no byte released)
 func TestBailBeforeCommit(t *testing.T) {
 	in := `{"model":"m","messages":[{"role":"user","content":"U","claude_content_blocks":[{"type":"text","text":"x"}]}]}`
 	tr := New()
@@ -21,22 +21,22 @@ func TestBailBeforeCommit(t *testing.T) {
 	}
 	emitted += len(tr.Finish())
 	bad, why := tr.Unsupported()
-	fmt.Printf("  小请求不支持形态: 不支持=%v 已发出=%d 字节 越过提交点=%v\n    原因: %s\n",
+	fmt.Printf("  small request, unsupported shape: unsupported=%v released=%d bytes past commit=%v\n    reason: %s\n",
 		bad, emitted, tr.Committed(), why)
 	if !bad {
-		t.Fatal("应判定不支持")
+		t.Fatal("should be unsupported")
 	}
 	if emitted != 0 {
-		t.Errorf("判定不支持后仍发出了 %d 字节，调用方无法干净回落", emitted)
+		t.Errorf("%d bytes released after the bail, the caller cannot fall back cleanly", emitted)
 	}
 	if tr.Committed() {
-		t.Error("小请求不应越过提交点")
+		t.Error("a small request should not pass the commit point")
 	}
 }
 
-// 提交点之后才发现不支持 → 已发出字节，只能让请求失败
+// Unsupported shape found after the commit point → bytes already released, the request can only fail
 func TestBailAfterCommit(t *testing.T) {
-	big := strings.Repeat("y", 200<<10) // 200KB，远超 CommitBytes
+	big := strings.Repeat("y", 200<<10) // 200KB, far beyond CommitBytes
 	in := `{"model":"m","messages":[{"role":"user","content":"` + big +
 		`"},{"role":"user","content":"x","claude_content_blocks":[{"type":"text","text":"x"}]}]}`
 	tr := New()
@@ -51,15 +51,15 @@ func TestBailAfterCommit(t *testing.T) {
 	}
 	emitted += len(tr.Finish())
 	bad, why := tr.Unsupported()
-	fmt.Printf("  大请求末尾不支持形态: 不支持=%v 已发出=%d 字节 越过提交点=%v\n    原因: %s\n",
+	fmt.Printf("  large request, unsupported shape at the end: unsupported=%v released=%d bytes past commit=%v\n    reason: %s\n",
 		bad, emitted, tr.Committed(), why)
 	if !bad {
-		t.Fatal("应判定不支持")
+		t.Fatal("should be unsupported")
 	}
 	if !tr.Committed() {
-		t.Error("200KB 输入应已越过提交点")
+		t.Error("a 200KB input should have passed the commit point")
 	}
 	if emitted == 0 {
-		t.Error("越过提交点后应已发出过字节")
+		t.Error("bytes should have been released after the commit point")
 	}
 }

@@ -1,4 +1,4 @@
-// 改名：OnKey 返回 Pass().As(新名)。只改顶层的 count，嵌套里的同名 key 不动。
+// Rename: OnKey returns Pass().As(newName). Only the top-level count is renamed; a nested key with the same name is untouched.
 //
 //	echo '{"id":"m","count":10,"n":{"count":1}}' | go run ./examples/rename
 package main

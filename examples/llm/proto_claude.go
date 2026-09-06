@@ -7,24 +7,24 @@ import (
 	"strings"
 )
 
-// OpenAI → Claude 的流式转换协议。
+// Streaming conversion protocol OpenAI → Claude.
 //
-// 逐行对照官方 claude.go buildClaudeTextGenRequest 推导。原则：
-//   - 长的东西（messages[].content 文本、图片 base64）流式直通，只在两端加壳；
-//   - 小的东西（model / role / tools / tool_calls / thinking 配置）Capture 后用与官方
-//     相同的 struct 走一遍 encoding/json，字节级复刻官方的 omitempty 与字段形状；
-//   - 依赖后续字段的决定（content 等 role、assistant content 等 tool_calls、part 等 type）
-//     用有界 Defer，超上限 Bail——不猜。
-//   - 官方 struct 里没有的字段官方会静默丢弃，这里同样 Skip；这是与官方一致的正确行为。
+// Derived line by line from the buffered claude.go buildClaudeTextGenRequest. Principles:
+//   - long things (messages[].content text, image base64) stream straight through with only a wrapper at each end;
+//   - small things (model / role / tools / tool_calls / thinking config) are Captured and run through encoding/json with
+//     the same structs as the buffered path, reproducing its omitempty and field shapes byte for byte;
+//   - decisions that depend on later fields (content waiting for role, assistant content waiting for tool_calls, a part
+//     waiting for type) use a bounded Defer and Bail past the cap: no guessing.
+//   - fields absent from the buffered structs are dropped silently there, so they are Skipped here; that matches the buffered path.
 //
-// 已知与官方的差异（都是"更宽松"，不会产出语义不同的合法请求）：
-//   - 被 Skip 的字段若类型不合法，官方 Unmarshal 会整体失败，这里不会；
-//   - 非法的 image data URL 官方会跳过该 part 并记日志，这里 Bail。
+// Known differences from the buffered path (all more lenient; none produces a valid request with different meaning):
+//   - a Skipped field with an invalid type makes the buffered Unmarshal fail as a whole, not here;
+//   - an invalid image data URL is skipped with a log line by the buffered path; here it Bails.
 
 type ClaudeOptions struct {
-	// MapModel 复刻官方 mapModel：model 为空或映射结果为空时返回错误。nil = 原样。
+	// MapModel reproduces the buffered mapModel: an error when model is empty or maps to empty. nil = unchanged.
 	MapModel func(model string) (string, error)
-	// ClaudeCodeMode 对应 provider 配置 claudeCodeMode：system 走数组 + cache_control。
+	// ClaudeCodeMode mirrors the provider setting claudeCodeMode: system becomes an array with cache_control.
 	ClaudeCodeMode bool
 }
 
@@ -33,21 +33,21 @@ const (
 	claudeMinThinkingBudgetTokens = 1024
 	claudeCodeSystemPrompt        = "You are Claude Code, Anthropic's official CLI for Claude."
 
-	// roleWaitCap：content 先于 role 到达时最多暂存多少；超过 Bail，不猜 role。
+	// roleWaitCap: how much content to hold when it arrives before role; past it Bail rather than guess the role.
 	roleWaitCap = 64 << 10
-	// assistantWaitCap：assistant 的 content 要等 tool_calls 才能定形状。
+	// assistantWaitCap: assistant content has to wait for tool_calls before its shape is known.
 	assistantWaitCap = 1 << 20
-	// partWaitCap：多模态 part 里 type 迟到时暂存 text / image_url。
+	// partWaitCap: text / image_url held while type arrives late in a multimodal part.
 	partWaitCap = 8 << 20
 	smallCap    = 64 << 10
 	toolsCap    = 4 << 20
-	// systemCap：system 内容必须整体搬到顶层。官方路径的请求体上限是 100MB（ai-proxy defaultMaxBodyBytes），
-	// 这里对齐它——不能因为改成流式反而让单个字段可以无限增长。
+	// systemCap: system content must move to the top level as a whole. The buffered path caps the request body at 100MB
+	// (ai-proxy defaultMaxBodyBytes); this matches it, so streaming does not let a single field grow without bound.
 	systemCap    = 100 << 20
 	urlPrefixWin = 512
 )
 
-// ---- 与官方逐字段对齐的小结构（只用于 Capture 后的改写）----
+// ---- small structs aligned field by field with the buffered path (only for rewriting Captured values) ----
 
 type oaiTool struct {
 	Type     string      `json:"type"`
@@ -107,7 +107,7 @@ type claudeToolResult struct {
 type claudePart struct {
 	typ     string
 	typSeen bool
-	dead    bool // 官方会跳过这个 part
+	dead    bool // the buffered path skips this part
 	urlSeen bool
 	file    []byte
 }
@@ -119,8 +119,8 @@ type claudeMsg struct {
 	contentSeen    bool
 	contentWritten bool
 	toolCallId     string
-	toolCalls      []byte // 原始字节；nil = 未见
-	toolText       string // tool role 的文本内容
+	toolCalls      []byte // raw bytes; nil = not seen
+	toolText       string // text content of a tool role message
 	finalizing     bool
 	part           claudePart
 }
@@ -135,7 +135,7 @@ type claudeProto struct {
 	stream        bool
 	streamSeen    bool
 	temp, topP    []byte
-	stopN         int // stop 数组元素个数（流式直通，只计数）
+	stopN         int // number of stop array elements (streamed through, only counted)
 	reasonEffort  string
 	reasonMax     int
 	thinkingRaw   []byte
@@ -150,15 +150,15 @@ type claudeProto struct {
 	msgLevel       int
 	openToolResult bool
 	sysSeen        bool
-	sys            string // 解码后的文本（content 是数组时）
-	sysRaw         []byte // content 是字符串时的原始 JSON 字面量，原样写出
+	sys            string // decoded text (when content is an array)
+	sysRaw         []byte // the raw JSON literal when content is a string, written verbatim
 	m              claudeMsg
 }
 
-// NewClaude 构造 OpenAI → Claude 转换器。
+// NewClaude builds the OpenAI → Claude transformer.
 func NewClaude(opt ClaudeOptions) *Transformer {
 	if opt.MapModel == nil {
-		// 官方 mapModel 的最小语义：model 缺失即失败
+		// minimal semantics of the buffered mapModel: a missing model fails
 		opt.MapModel = func(m string) (string, error) {
 			if m == "" {
 				return "", errors.New("missing model in request")
@@ -168,18 +168,18 @@ func NewClaude(opt ClaudeOptions) *Transformer {
 	}
 	p := &claudeProto{opt: opt, tools: ToolsHook{ParamsKey: "input_schema"}}
 	t := NewTransformer(p)
-	t.DupKeyBail = true // 官方 struct 解析是"后者覆盖前者"，流式无法复刻，回落
+	t.DupKeyBail = true // buffered struct decoding is last-wins, which streaming cannot reproduce: fall back
 	return t
 }
 
-// New 保留旧接口：默认选项的 Claude 转换器。
+// New keeps the old constructor: a Claude transformer with default options.
 func New() *Transformer { return NewClaude(ClaudeOptions{}) }
 
 func (p *claudeProto) Prelude() Prelude {
 	return Prelude{Model: p.model, ModelSeen: p.modelSeen, Stream: p.stream, StreamSeen: p.streamSeen}
 }
 
-// ---- 派发 ----
+// ---- dispatch ----
 
 func (p *claudeProto) OnKey(t *Transformer) Action {
 	switch t.Depth() {
@@ -192,7 +192,7 @@ func (p *claudeProto) OnKey(t *Transformer) Action {
 	case 6:
 		return p.imageKey(t)
 	}
-	return Bail("意外的路径: " + t.PathString())
+	return Bail("unexpected path: " + t.PathString())
 }
 
 func (p *claudeProto) OnElem(t *Transformer) Action {
@@ -203,33 +203,33 @@ func (p *claudeProto) OnElem(t *Transformer) Action {
 	case 2, 4: // messages[i] / messages[i].content[j]
 		return Probe()
 	}
-	return Bail("意外的数组: " + t.PathString())
+	return Bail("unexpected array: " + t.PathString())
 }
 
 func (p *claudeProto) OnStart(t *Transformer, kind ValueKind) Action {
 	w := t.W()
 	if t.Depth() == 1 && t.Last() == "tools" {
 		switch kind {
-		case KindNull: // 官方 Tools 为 nil，不输出
+		case KindNull: // buffered Tools is nil: not written
 			return Skip()
 		case KindArray:
-			return Enter().Lazy().Via(&p.tools) // 空数组：omitempty 省略；内部交给子 hook
+			return Enter().Lazy().Via(&p.tools) // empty array: omitted by omitempty; the inside goes to the sub-hook
 		}
-		return Bail("tools 不是数组，官方 struct 解析失败")
+		return Bail("tools is not an array, the buffered struct decoding fails")
 	}
 	if t.Key(0) == "stop" {
 		switch t.Depth() {
 		case 1:
 			switch kind {
 			case KindArray:
-				return Enter().As("stop_sequences").Lazy() // 空数组 omitempty
+				return Enter().As("stop_sequences").Lazy() // empty array: omitempty
 			case KindNull:
 				return Skip()
 			}
-			return Bail("stop 不是字符串数组")
+			return Bail("stop is not an array of strings")
 		case 2:
 			if kind != KindString {
-				return Bail("stop 不是字符串数组")
+				return Bail("stop is not an array of strings")
 			}
 			p.stopN++
 			return Pass()
@@ -238,18 +238,18 @@ func (p *claudeProto) OnStart(t *Transformer, kind ValueKind) Action {
 	switch t.Depth() {
 	case 1: // messages
 		if kind != KindArray {
-			return Bail("messages 不是数组")
+			return Bail("messages is not an array")
 		}
 		p.msgLevel = w.Level() + 1
-		return Enter().Lazy() // 全是 system 时官方输出 null，由 Tail 补
+		return Enter().Lazy() // all-system: the buffered path writes null, added by Tail
 	case 2: // messages[i]
 		if kind != KindObject {
-			return Bail("message 不是对象")
+			return Bail("message is not an object")
 		}
 		p.m = claudeMsg{}
 		p.inputMsgs++
-		return Enter().Lazy() // system / 被合并的 tool 消息不产生元素
-	case 3: // messages[i].content（role 已知且为普通消息）
+		return Enter().Lazy() // system / merged tool messages produce no element
+	case 3: // messages[i].content (role known, ordinary message)
 		switch kind {
 		case KindString:
 			p.writeRole(t)
@@ -260,25 +260,25 @@ func (p *claudeProto) OnStart(t *Transformer, kind ValueKind) Action {
 			p.m.contentWritten = true
 			return Enter()
 		}
-		// 对象 / 标量 / null：官方 ParseContent 得到空 → "content":[]，在 OnLeave 补
+		// object / scalar / null: the buffered ParseContent yields empty → "content":[], added in OnLeave
 		return Skip()
 	case 4: // messages[i].content[j]
 		if kind != KindObject {
-			return Skip() // 官方：非 map 的元素直接跳过
+			return Skip() // buffered path: non-map elements are skipped
 		}
 		p.m.part = claudePart{}
-		return Enter().Lazy() // 官方会跳过的 part 不留痕迹
+		return Enter().Lazy() // a part the buffered path skips leaves no trace
 	case 5:
 		pt := &p.m.part
 		switch t.Last() {
 		case "text":
 			if kind != KindString {
-				pt.dead = true // 官方：text 不是字符串则整个 part 跳过
+				pt.dead = true // buffered path: the whole part is skipped when text is not a string
 				return Skip()
 			}
 			w.Key("type")
 			w.RawString(`"text"`)
-			return Prefix(1) // 官方 Text 带 omitempty：空串时不输出 text 键，得先看一眼是不是空
+			return Prefix(1) // buffered Text has omitempty: no text key for an empty string, so peek first
 
 		case "image_url":
 			if kind != KindObject {
@@ -288,7 +288,7 @@ func (p *claudeProto) OnStart(t *Transformer, kind ValueKind) Action {
 			return Enter().Flat()
 		}
 	}
-	return Bail("意外的 Probe: " + t.PathString())
+	return Bail("unexpected Probe: " + t.PathString())
 }
 
 func (p *claudeProto) topKey(t *Transformer) Action {
@@ -296,7 +296,7 @@ func (p *claudeProto) topKey(t *Transformer) Action {
 	case "model":
 		return Capture(4 << 10)
 	case "messages", "tools", "stop":
-		return Probe() // 数组：逐元素流式
+		return Probe() // array: stream element by element
 	case "max_tokens", "max_completion_tokens", "reasoning_max_tokens", "temperature", "top_p":
 		return Capture(64)
 	case "stream", "parallel_tool_calls":
@@ -310,7 +310,7 @@ func (p *claudeProto) topKey(t *Transformer) Action {
 	case "tool_choice":
 		return Capture(4 << 10)
 	}
-	// Claude 无对应字段，或官方 chatCompletionRequest 未定义：官方同样丢弃
+	// no Claude counterpart, or not defined in the buffered chatCompletionRequest: dropped there as well
 	return Skip()
 }
 
@@ -326,12 +326,12 @@ func (p *claudeProto) msgKey(t *Transformer) Action {
 		m.contentSeen = true
 		switch m.role {
 		case "system", "developer":
-			return Capture(systemCap) // 必须整体搬到顶层 system；上限对齐官方的请求体上限
+			return Capture(systemCap) // must move to the top-level system as a whole; the cap matches the buffered body limit
 		case "tool":
 			return Capture(assistantWaitCap)
 		case "assistant":
 			if !m.finalizing {
-				return Defer(assistantWaitCap) // 形状取决于是否有 tool_calls
+				return Defer(assistantWaitCap) // the shape depends on whether tool_calls is present
 			}
 		}
 		return Probe()
@@ -340,9 +340,9 @@ func (p *claudeProto) msgKey(t *Transformer) Action {
 	case "tool_call_id":
 		return Capture(4 << 10)
 	case "claude_content_blocks":
-		return Bail("claude_content_blocks 需要 struct 往返，流式未复刻")
+		return Bail("claude_content_blocks needs a struct round trip, not reproduced by streaming")
 	}
-	return Skip() // name / audio / refusal / reasoning* / function_call …：官方不读
+	return Skip() // name / audio / refusal / reasoning* / function_call ...: not read by the buffered path
 }
 
 func (p *claudeProto) partKey(t *Transformer) Action {
@@ -378,7 +378,7 @@ func (p *claudeProto) partKey(t *Transformer) Action {
 		}
 		return Capture(smallCap)
 	}
-	return Skip() // cache_control / input_audio / 未知：官方不读
+	return Skip() // cache_control / input_audio / unknown: not read by the buffered path
 }
 
 func (p *claudeProto) imageKey(t *Transformer) Action {
@@ -386,10 +386,10 @@ func (p *claudeProto) imageKey(t *Transformer) Action {
 		p.m.part.urlSeen = true
 		return Prefix(urlPrefixWin)
 	}
-	return Skip() // detail 等
+	return Skip() // detail and the like
 }
 
-// ---- 值到齐 ----
+// ---- values complete ----
 
 func (p *claudeProto) OnValue(t *Transformer, raw []byte) {
 	switch t.Depth() {
@@ -408,7 +408,7 @@ func (p *claudeProto) topValue(t *Transformer, raw []byte) {
 	case "model":
 		s, ok := jsonUnquote(raw)
 		if !ok {
-			t.Bail("model 不是字符串")
+			t.Bail("model is not a string")
 			return
 		}
 		p.model, p.modelSeen = s, true
@@ -417,7 +417,7 @@ func (p *claudeProto) topValue(t *Transformer, raw []byte) {
 			return
 		}
 		if !isIntLiteral(raw) {
-			t.Bail(t.Last() + " 不是整数")
+			t.Bail(t.Last() + " is not an integer")
 			return
 		}
 		n := atoi(raw)
@@ -436,7 +436,7 @@ func (p *claudeProto) topValue(t *Transformer, raw []byte) {
 		case "false", "null":
 			p.stream = false
 		default:
-			t.Bail("stream 不是布尔")
+			t.Bail("stream is not a boolean")
 			return
 		}
 		p.streamSeen = !isNull
@@ -450,20 +450,20 @@ func (p *claudeProto) topValue(t *Transformer, raw []byte) {
 			p.parallelTC = &v
 		case "null":
 		default:
-			t.Bail("parallel_tool_calls 不是布尔")
+			t.Bail("parallel_tool_calls is not a boolean")
 		}
 	case "temperature", "top_p":
 		if isNull {
 			return
 		}
 		if !isNumLiteral(raw) {
-			t.Bail(t.Last() + " 不是数字")
+			t.Bail(t.Last() + " is not a number")
 			return
 		}
-		// 官方是 float64 字段再 Marshal：1e0 → 1、0.70 → 0.7。这里走同一条路，字节级对齐
+		// the buffered path stores a float64 and Marshals it again: 1e0 → 1, 0.70 → 0.7. Same route here, byte-aligned
 		var f float64
 		if err := json.Unmarshal(raw, &f); err != nil {
-			t.Bail(t.Last() + " 不是数字")
+			t.Bail(t.Last() + " is not a number")
 			return
 		}
 		cp, _ := json.Marshal(f)
@@ -478,7 +478,7 @@ func (p *claudeProto) topValue(t *Transformer, raw []byte) {
 		}
 		s, ok := jsonUnquote(raw)
 		if !ok {
-			t.Bail("reasoning_effort 不是字符串")
+			t.Bail("reasoning_effort is not a string")
 			return
 		}
 		p.reasonEffort = s
@@ -503,25 +503,25 @@ func (p *claudeProto) msgValue(t *Transformer, raw []byte) {
 	case "role":
 		s, ok := jsonUnquote(raw)
 		if !ok {
-			t.Bail("role 不是字符串")
+			t.Bail("role is not a string")
 			return
 		}
 		m.role, m.roleSeen = s, true
-		// 官方：system 消息 continue 掉，不影响"上一条输出消息"的判定，
-		// 所以 tool_result 的合并可以跨过 system 消息。
+		// buffered path: system messages are skipped with continue and do not affect "the previous output message",
+		// so tool_result merging can reach across a system message.
 		if p.openToolResult && s != "tool" && s != "system" && s != "developer" {
 			p.closeToolResult(t)
 		}
 		if s != "assistant" && len(t.Deferred()) > 0 {
-			t.Release() // content 先到了：现在知道 role，回放
+			t.Release() // content arrived first: the role is known now, replay
 		}
 	case "content":
-		// 只有 system / developer / tool 的 content 会 Capture 到这里
+		// only the content of system / developer / tool messages is Captured here
 		switch m.role {
 		case "system", "developer":
 			p.sysSeen = true
 			if len(raw) > 0 && raw[0] == '"' {
-				p.sysRaw = append([]byte(nil), raw...) // 字符串：不解码，原样写出
+				p.sysRaw = append([]byte(nil), raw...) // string: not decoded, written verbatim
 				p.sys = ""
 			} else {
 				p.sysRaw = nil
@@ -537,7 +537,7 @@ func (p *claudeProto) msgValue(t *Transformer, raw []byte) {
 	case "tool_call_id":
 		s, ok := jsonUnquote(raw)
 		if !ok {
-			t.Bail("tool_call_id 不是字符串")
+			t.Bail("tool_call_id is not a string")
 			return
 		}
 		m.toolCallId = s
@@ -551,7 +551,7 @@ func (p *claudeProto) partValue(t *Transformer, raw []byte) {
 		pt.typSeen = true
 		s, ok := jsonUnquote(raw)
 		if !ok {
-			pt.dead = true // 官方 switch contentMap["type"] 匹配不到
+			pt.dead = true // buffered switch contentMap["type"] matches nothing
 			t.DropDeferred()
 			return
 		}
@@ -562,7 +562,7 @@ func (p *claudeProto) partValue(t *Transformer, raw []byte) {
 				t.Release()
 			}
 		default:
-			pt.dead = true // input_audio 官方明确不支持；其余匹配不到
+			pt.dead = true // input_audio is explicitly unsupported by the buffered path; the rest matches nothing
 			t.DropDeferred()
 		}
 	case "file":
@@ -570,12 +570,12 @@ func (p *claudeProto) partValue(t *Transformer, raw []byte) {
 	}
 }
 
-// OnPrefix：image_url.url 的前缀窗口。复刻官方对 data: URL 的拆分。
+// OnPrefix: the prefix window of image_url.url. Reproduces the buffered splitting of data: URLs.
 func (p *claudeProto) OnPrefix(t *Transformer, raw []byte, complete bool) (Action, int) {
 	w := t.W()
 	if t.Depth() == 5 && t.Last() == "text" {
 		if complete && len(raw) == 0 {
-			return Skip(), 0 // {"type":"text"}，与官方 omitempty 一致
+			return Skip(), 0 // {"type":"text"}, consistent with the buffered omitempty
 		}
 		w.Key("text")
 		return Pass().Wrap(lit0, lit0), 0
@@ -594,15 +594,15 @@ func (p *claudeProto) OnPrefix(t *Transformer, raw []byte, complete bool) (Actio
 	semi := bytes.IndexByte(dec, ';')
 	if semi < 0 {
 		if complete {
-			return Bail("image url 格式非法，官方会跳过该 part"), 0
+			return Bail("invalid image url format, the buffered path skips this part"), 0
 		}
-		return Bail("data URL 头超出前缀窗口"), 0
+		return Bail("data URL header exceeds the prefix window"), 0
 	}
 	media := string(dec[5:semi])
 	rest := dec[semi+1:]
 	resumeDec := semi + 1
 	if !complete && len(rest) < len("base64,") {
-		return Bail("data URL 头在窗口边界被截断"), 0
+		return Bail("data URL header cut at the window boundary"), 0
 	}
 	if bytes.HasPrefix(rest, lit4) {
 		resumeDec += len("base64,")
@@ -610,7 +610,7 @@ func (p *claudeProto) OnPrefix(t *Transformer, raw []byte, complete bool) (Actio
 	resume := off[resumeDec]
 	dataEmpty := complete && resume >= len(raw)
 	if !complete && resume >= len(raw) {
-		return Bail("data URL 数据段在窗口边界被截断"), 0
+		return Bail("data URL payload cut at the window boundary"), 0
 	}
 	w.Key("type")
 	w.RawString(`"image"`)
@@ -630,12 +630,12 @@ func (p *claudeProto) OnPrefix(t *Transformer, raw []byte, complete bool) (Actio
 	return Pass().Wrap(pre, lit3), resume
 }
 
-// ---- 容器闭合 ----
+// ---- containers closing ----
 
 func (p *claudeProto) OnLeave(t *Transformer) {
 	w := t.W()
 	if t.Key(0) == "tools" || t.Key(0) == "stop" {
-		return // 数组闭合：无事可做（内部由子 hook 处理）
+		return // array closed: nothing to do (the inside is handled by the sub-hook)
 	}
 	switch t.Depth() {
 	case 1: // messages
@@ -648,7 +648,7 @@ func (p *claudeProto) OnLeave(t *Transformer) {
 		}
 	case 2: // messages[i]
 		p.finishMessage(t)
-	case 3: // messages[i].content 数组：官方总是物化 []
+	case 3: // messages[i].content array: the buffered path always materializes []
 		w.Open()
 	case 4: // part
 		pt := &p.m.part
@@ -659,12 +659,12 @@ func (p *claudeProto) OnLeave(t *Transformer) {
 		if pt.typ == "file" && pt.file != nil {
 			var obj map[string]interface{}
 			if err := json.Unmarshal(pt.file, &obj); err != nil {
-				t.Bail("file 不是对象")
+				t.Bail("file is not an object")
 				return
 			}
 			id, ok := obj["file_id"].(string)
 			if !ok {
-				t.Bail("file.file_id 缺失，官方会 panic")
+				t.Bail("file.file_id missing, the buffered path panics")
 				return
 			}
 			w.Key("type")
@@ -679,7 +679,7 @@ func (p *claudeProto) OnLeave(t *Transformer) {
 		}
 	case 5: // image_url
 		if !p.m.part.urlSeen {
-			t.Bail("image_url.url 缺失，官方会 panic")
+			t.Bail("image_url.url missing, the buffered path panics")
 		}
 	}
 }
@@ -700,12 +700,12 @@ func (p *claudeProto) closeToolResult(t *Transformer) {
 	p.openToolResult = false
 }
 
-// finishMessage 在一条 message 闭合时定稿。
+// finishMessage finalizes a message when it closes.
 func (p *claudeProto) finishMessage(t *Transformer) {
 	m := &p.m
 	w := t.W()
 	if !m.roleSeen {
-		m.role, m.roleSeen = "", true // 官方 Role 零值
+		m.role, m.roleSeen = "", true // buffered Role zero value
 		if p.openToolResult {
 			p.closeToolResult(t)
 		}
@@ -734,7 +734,7 @@ func (p *claudeProto) finishMessage(t *Transformer) {
 			return
 		}
 		if !w.ElemAt(p.msgLevel) {
-			t.Bail("tool message 输出位置异常")
+			t.Bail("tool message written at an unexpected position")
 			return
 		}
 		w.RawString(`{"role":"user","content":[`)
@@ -746,7 +746,7 @@ func (p *claudeProto) finishMessage(t *Transformer) {
 		if m.toolCalls != nil {
 			var tcs []oaiToolCall
 			if err := json.Unmarshal(m.toolCalls, &tcs); err != nil {
-				t.Bail("tool_calls 解析失败: " + err.Error())
+				t.Bail("tool_calls failed to decode: " + err.Error())
 				return
 			}
 			if len(tcs) > 0 {
@@ -755,7 +755,7 @@ func (p *claudeProto) finishMessage(t *Transformer) {
 			}
 		}
 	}
-	// 普通消息（user / assistant 无 tool_calls / 其他 role）
+	// ordinary message (user / assistant without tool_calls / other roles)
 	if len(t.Deferred()) > 0 {
 		t.ReleaseNow()
 		if t.Dead() {
@@ -779,7 +779,7 @@ func (p *claudeProto) writeAssistantWithTools(t *Transformer, tcs []oaiToolCall)
 		if kv.Key != "content" {
 			continue
 		}
-		// 官方：IsStringContent && StringContent != ""
+		// buffered path: IsStringContent && StringContent != ""
 		if len(kv.Raw) > 2 && kv.Raw[0] == '"' {
 			w.RawString(`{"type":"text","text":`)
 			w.Raw(kv.Raw)
@@ -807,7 +807,7 @@ func (p *claudeProto) writeAssistantWithTools(t *Transformer, tcs []oaiToolCall)
 	w.Byte(']')
 }
 
-// ---- 收尾 ----
+// ---- tail ----
 
 func (p *claudeProto) Tail(t *Transformer) {
 	w := t.W()
@@ -826,7 +826,7 @@ func (p *claudeProto) Tail(t *Transformer) {
 	}
 	if p.msgCount == 0 {
 		w.Key("messages")
-		w.RawString("null") // 官方 nil slice
+		w.RawString("null") // buffered nil slice
 	}
 	// system
 	if p.opt.ClaudeCodeMode {
@@ -880,7 +880,7 @@ func (p *claudeProto) Tail(t *Transformer) {
 	if p.thinkingRaw != nil {
 		var cfg claudeThinkingConfig
 		if err := json.Unmarshal(p.thinkingRaw, &cfg); err != nil {
-			t.Bail("claude_thinking 解析失败")
+			t.Bail("claude_thinking failed to decode")
 			return
 		}
 		thinking = &cfg
@@ -926,7 +926,7 @@ func (p *claudeProto) Tail(t *Transformer) {
 	if p.outputRaw != nil {
 		var cfg claudeOutputConfig
 		if err := json.Unmarshal(p.outputRaw, &cfg); err != nil {
-			t.Bail("claude_output_config 解析失败")
+			t.Bail("claude_output_config failed to decode")
 			return
 		}
 		b, _ := json.Marshal(&cfg)
@@ -939,7 +939,7 @@ func (p *claudeProto) writeToolChoice(t *Transformer, thinking *claudeThinkingCo
 	w := t.W()
 	var any interface{}
 	if err := json.Unmarshal(p.toolChoiceRaw, &any); err != nil {
-		t.Bail("tool_choice 解析失败")
+		t.Bail("tool_choice failed to decode")
 		return
 	}
 	if any == nil {
@@ -994,21 +994,21 @@ func (p *claudeProto) writeToolChoice(t *Transformer, thinking *claudeThinkingCo
 	}
 }
 
-// ---- 官方 StringContent / ParseContent 的复刻（只用于已 Capture 的小值）----
+// ---- reproductions of the buffered StringContent / ParseContent (only for small Captured values) ----
 
-// stringContent 复刻 chatMessage.StringContent：字符串原样；数组取 text 部分各加 "\n"；其余 ""。
+// stringContent reproduces chatMessage.StringContent: a string as is; an array joins its text parts, each followed by "\n"; anything else "".
 func stringContent(t *Transformer, raw []byte) string {
 	if len(raw) > 0 && raw[0] == '"' {
 		s, ok := jsonUnquote(raw)
 		if !ok {
-			t.Bail("content 字符串非法")
+			t.Bail("invalid content string")
 		}
 		return s
 	}
 	if len(raw) > 0 && raw[0] == '[' {
 		var items []interface{}
 		if err := json.Unmarshal(raw, &items); err != nil {
-			t.Bail("content 数组非法")
+			t.Bail("invalid content array")
 			return ""
 		}
 		var sb strings.Builder
@@ -1029,19 +1029,19 @@ func stringContent(t *Transformer, raw []byte) string {
 	return ""
 }
 
-// toolResultText 复刻 tool role 分支：字符串原样；否则 ParseContent 的 text 部分用 "\n" 连接。
+// toolResultText reproduces the tool role branch: a string as is; otherwise the text parts of ParseContent joined with "\n".
 func toolResultText(t *Transformer, raw []byte) string {
 	if len(raw) > 0 && raw[0] == '"' {
 		s, ok := jsonUnquote(raw)
 		if !ok {
-			t.Bail("content 字符串非法")
+			t.Bail("invalid content string")
 		}
 		return s
 	}
 	if len(raw) > 0 && raw[0] == '[' {
 		var items []interface{}
 		if err := json.Unmarshal(raw, &items); err != nil {
-			t.Bail("content 数组非法")
+			t.Bail("invalid content array")
 			return ""
 		}
 		var parts []string

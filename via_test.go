@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// Via：子树内的回调全部落到子 hook，容器闭合的 OnLeave 回到发起方；子 hook 自己 Enter 的更深层也归它。
+// Via: every callback inside the subtree goes to the sub-hook and OnLeave of the container goes back to the issuer; deeper levels the sub-hook enters itself are its own.
 type viaHost struct {
 	BaseProtocol
 	sub   viaSub
@@ -41,7 +41,7 @@ func (s *viaSub) OnElem(t *Transformer) Action {
 }
 func (s *viaSub) OnStart(t *Transformer, kind ValueKind) Action {
 	*s.trace = append(*s.trace, "sub.start:"+t.PathString())
-	return Enter() // 子 hook 自己 Enter：更深层仍归它
+	return Enter() // the sub-hook enters itself: deeper levels stay with it
 }
 func (s *viaSub) OnLeave(t *Transformer) { *s.trace = append(*s.trace, "sub.leave:"+t.PathString()) }
 
@@ -56,16 +56,16 @@ func TestVia(t *testing.T) {
 			t.Fatalf("chunk=%d: %s", cs, why)
 		}
 		if out != in {
-			t.Fatalf("chunk=%d: 输出 %s", cs, out)
+			t.Fatalf("chunk=%d: output %s", cs, out)
 		}
 		want := []string{
 			"host.key:a", "host.key:sub", "host.start:sub",
 			"sub.key:sub.x", "sub.key:sub.in", "sub.start:sub.in", "sub.key:sub.in.y", "sub.leave:sub.in",
-			"host.leave:sub", "host.key:b", "host.leave:", // 最后是根对象闭合
+			"host.leave:sub", "host.key:b", "host.leave:", // last: the root object closing
 		}
 		got := strings.Join(trace, " ")
 		if got != strings.Join(want, " ") {
-			t.Fatalf("chunk=%d 回调序列不对:\n got  %s\n want %s", cs, got, strings.Join(want, " "))
+			t.Fatalf("chunk=%d wrong callback sequence:\n got  %s\n want %s", cs, got, strings.Join(want, " "))
 		}
 	}
 }

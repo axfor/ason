@@ -1,5 +1,5 @@
-// 重组：一个输入容器落到多层嵌套输出——items 变成 data.items。
-// 协议用 PushObj / PushArr 自建输出层，再 Enter().Flat() 让元素直接落进去；闭合时 Open 物化空数组并 Pop。
+// Restructuring: one input container lands in nested output levels; items becomes data.items.
+// The protocol builds the output levels itself with PushObj / PushArr, then Enter().Flat() lets the elements land there directly; on close, Open materializes an empty array and Pop closes it.
 //
 //	echo '{"id":"m","items":[{"a":1},{"b":2}],"flag":true}' | go run ./examples/restructure
 package main
@@ -20,7 +20,7 @@ func (nestProto) OnKey(t *ason.Transformer) ason.Action {
 
 func (nestProto) OnStart(t *ason.Transformer, kind ason.ValueKind) ason.Action {
 	if kind != ason.KindArray {
-		return ason.Bail("items 不是数组")
+		return ason.Bail("items is not an array")
 	}
 	w := t.W()
 	w.PushObj("data")

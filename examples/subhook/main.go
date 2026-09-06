@@ -1,5 +1,5 @@
-// 子 hook：Enter().Via(hook) 把整棵子树的回调交给另一个 Protocol；容器闭合的 OnLeave 回到发起方。
-// 这里 meta 子树里的每个 key 都加前缀 x_，包括更深层由子 hook 自己 Enter 的对象。
+// Sub-hook: Enter().Via(hook) hands the callbacks of a whole subtree to another Protocol; OnLeave of the container goes back to the issuer.
+// Here every key inside the meta subtree gets the prefix x_, including deeper objects the sub-hook enters itself.
 //
 //	echo '{"meta":{"a":1,"b":{"c":2}},"d":3}' | go run ./examples/subhook
 package main
@@ -15,7 +15,7 @@ type prefixKeys struct {
 }
 
 func (h *prefixKeys) OnKey(t *ason.Transformer) ason.Action {
-	if t.Depth() == 2 { // meta 的直接子项：改名；对象值继续进入（仍由本 hook 处理）
+	if t.Depth() == 2 { // direct children of meta: rename; object values are entered (still handled by this hook)
 		return ason.Probe()
 	}
 	return ason.Pass().As(h.prefix + t.Last())

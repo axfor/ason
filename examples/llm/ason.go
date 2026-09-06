@@ -1,7 +1,7 @@
 package llm
 
-// 引擎来自 github.com/axfor/ason（协议无关的流式 JSON 转换：扫描器、动作、惰性写出器、严格校验）。
-// 这里用别名把它的 API 原样暴露在本包，协议文件（proto_*.go、hook_tools.go）不感知包边界。
+// The engine comes from github.com/axfor/ason (protocol-agnostic streaming JSON transformation: scanner, actions, lazy writer, strict validation).
+// Its API is exposed in this package through aliases so the protocol files (proto_*.go, hook_tools.go) do not see the package boundary.
 
 import "github.com/axfor/ason"
 
@@ -13,6 +13,22 @@ type (
 	BaseProtocol = ason.BaseProtocol
 	Writer       = ason.Writer
 	DeferredKV   = ason.DeferredKV
+	// Error / Code: details and classification of a bail (tr.Err()). The integration layer classifies fallbacks by Code, never by message text.
+	Error = ason.Error
+	Code  = ason.Code
+)
+
+const (
+	ErrNone          = ason.ErrNone
+	ErrSyntax        = ason.ErrSyntax
+	ErrIncomplete    = ason.ErrIncomplete
+	ErrRoot          = ason.ErrRoot
+	ErrTrailing      = ason.ErrTrailing
+	ErrDuplicateKey  = ason.ErrDuplicateKey
+	ErrLimit         = ason.ErrLimit
+	ErrLeftoverDefer = ason.ErrLeftoverDefer
+	ErrUnsupported   = ason.ErrUnsupported
+	ErrMisuse        = ason.ErrMisuse
 )
 
 const (
@@ -23,7 +39,7 @@ const (
 	KindBool   = ason.KindBool
 	KindNumber = ason.KindNumber
 
-	// CommitBytes 是提交点窗口：扫描这么多输入字节之前不下发任何输出。
+	// CommitBytes is the commit window: no output is released before this many input bytes have been scanned.
 	CommitBytes = ason.CommitBytes
 )
 
@@ -38,9 +54,10 @@ var (
 	Probe          = ason.Probe
 	Prefix         = ason.Prefix
 	Bail           = ason.Bail
+	BailCode       = ason.BailCode
 )
 
-// 协议实现里用到的通用辅助
+// helpers shared by the protocol implementations
 func appendJSONString(dst []byte, s string) []byte { return ason.AppendJSONString(dst, s) }
 func jsonUnquote(raw []byte) (string, bool)        { return ason.JSONUnquote(raw) }
 func unescapePrefix(b []byte) ([]byte, []int)      { return ason.UnescapePrefix(b) }

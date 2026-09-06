@@ -1,40 +1,40 @@
 package ason
 
-// 层 2 接口：协议 hooks 与动作。
+// Layer 2 interface: protocol hooks and actions.
 //
-// 协议实现是手写代码，不是规则表——协议之间差的是结构，不是字段名。
-// 框架只提供"对一个 key/元素/值怎么处理"的动作集，决定权全在协议代码里。
+// A protocol implementation is hand-written code, not a rule table: protocols differ in structure, not in field names.
+// The framework only offers the set of actions "what to do with one key / element / value"; every decision belongs to the protocol code.
 
 type actKind uint8
 
 const (
-	akPass    actKind = iota // 规则 1：key+value 原样输出（可改名/加壳），不缓存
-	akSkip                   // 规则 2：丢弃到该值结束，不缓存
-	akCapture                // 规则 3-③：值完整缓冲后交给 OnValue 改写（只用于小值）
-	akObserve                // Pass + 同时给 OnValue 一份拷贝（小值）
-	akDefer                  // 有界暂存 key+value，等协议 Release 时按当时状态回放
-	akEnter                  // 进入容器：子 key / 子元素继续交给协议决定
-	akProbe                  // 先看值的类型再决定：回调 OnStart
-	akPrefix                 // 字符串：先攒前缀窗口交给 OnPrefix，再决定后续
-	akBail                   // 处理不了 → 回落
+	akPass    actKind = iota // rule 1: key+value written unchanged (may be renamed / wrapped), never buffered
+	akSkip                   // rule 2: dropped up to the end of the value, never buffered
+	akCapture                // rule 3: the whole value is buffered and handed to OnValue for rewriting (small values only)
+	akObserve                // Pass plus a copy for OnValue (small values)
+	akDefer                  // key+value held in a bounded buffer and replayed, with the protocol state of that moment, when the protocol calls Release
+	akEnter                  // enter the container: child keys / elements keep going to the protocol
+	akProbe                  // look at the value kind first: OnStart is called back
+	akPrefix                 // strings: collect a prefix window for OnPrefix, then decide
+	akBail                   // cannot handle it → fallback
 )
 
-// Action 是协议对一个 key / 元素 / 值的处理决定。
-// 用构造函数 + 链式修饰生成；零值无意义。
+// Action is the protocol's decision for one key / element / value.
+// Built with a constructor plus chained modifiers; the zero value is meaningless.
 type Action struct {
 	kind    actKind
-	code    Code     // Bail：分类，Bail() 为 ErrUnsupported
-	inner   bool     // Pass：只拷贝字符串内容（去掉两端引号）；非字符串则 Bail
-	flat    bool     // Enter：不在输出侧建立对应层（协议自己决定写什么）
-	lenient bool     // Enter：值不是容器时按 Pass 处理而不是 Bail
-	lazy    bool     // Enter：闭合时若从未写入任何子项，就不物化（丢弃）；默认物化为 [] / {}
-	level   int32    // -1 = 当前输出层；否则写到指定外层（要求其上所有层尚未打开）
-	cap     int32    // Capture/Observe/Defer/Prefix：字节上限，0 = 不限
-	key     string   // Pass/Enter：输出时改名；"" 沿用原 key
-	prefix  []byte   // Pass：写在值前
-	suffix  []byte   // Pass：写在值后
+	code    Code     // Bail: classification, ErrUnsupported for Bail()
+	inner   bool     // Pass: copy only the string content (without the quotes); Bail on a non-string
+	flat    bool     // Enter: no matching level on the output side (the protocol decides what to write)
+	lenient bool     // Enter: a non-container value is handled as Pass instead of a Bail
+	lazy    bool     // Enter: if nothing was written inside by the close, do not materialize (drop); by default materialized as [] / {}
+	level   int32    // -1 = the current output level; otherwise write to the given outer level (every level above it must still be unopened)
+	cap     int32    // Capture/Observe/Defer/Prefix: byte cap, 0 = unlimited
+	key     string   // Pass/Enter: output name; "" keeps the original key
+	prefix  []byte   // Pass: written before the value
+	suffix  []byte   // Pass: written after the value
 	reason  string   // Bail
-	via     Protocol // Enter：这棵子树里的回调交给它（子 hook），容器闭合的 OnLeave 仍回到发起 Enter 的一方
+	via     Protocol // Enter: the callbacks inside this subtree go to it (a sub-hook); OnLeave of the container still goes to whoever issued the Enter
 }
 
 func Pass() Action           { return Action{kind: akPass, level: -1} }
@@ -46,7 +46,7 @@ func Enter() Action          { return Action{kind: akEnter, level: -1} }
 func Probe() Action          { return Action{kind: akProbe, level: -1} }
 func Prefix(cap int) Action  { return Action{kind: akPrefix, level: -1, cap: clampCap(cap)} }
 
-// clampCap 把上限收进 int32（缓冲上限远小于 2GB；更大的值按 2GB-1 处理）。
+// clampCap fits a cap into int32 (buffer caps are far below 2GB; larger values are treated as 2GB-1).
 func clampCap(n int) int32 {
 	if n > 1<<31-1 {
 		return 1<<31 - 1
@@ -55,52 +55,52 @@ func clampCap(n int) int32 {
 }
 func Bail(reason string) Action { return BailCode(ErrUnsupported, reason) }
 
-// As 改名（Pass / Enter）。
+// As renames (Pass / Enter).
 func (a Action) As(key string) Action { a.key = key; return a }
 
-// At 写到指定输出层（Pass / Enter）。层号取自 Writer.Level()。
+// At writes to the given output level (Pass / Enter). Level numbers come from Writer.Level().
 func (a Action) At(level int) Action { a.level = int32(level); return a }
 
-// Inner 只输出字符串内容，不带引号（Pass）。
+// Inner writes only the string content, without quotes (Pass).
 func (a Action) Inner() Action { a.inner = true; return a }
 
-// Wrap 在值两端加壳（Pass）。prefix/suffix 应是静态字节，回调期间不会被修改。
+// Wrap adds bytes around the value (Pass). prefix/suffix should be static bytes that are not modified during the callback.
 func (a Action) Wrap(prefix, suffix []byte) Action { a.prefix = prefix; a.suffix = suffix; return a }
 
-// Flat：Enter 时不在输出侧建层（Enter）。
+// Flat: no level is created on the output side when entering (Enter).
 func (a Action) Flat() Action { a.flat = true; return a }
 
-// Lazy：Enter 的容器闭合时若什么都没写，就一个字节都不输出（Enter）。
-// 用于"元素可能整个被丢弃"的场合；默认行为是物化为空容器，与输入保持一致。
+// Lazy: if nothing was written by the time the entered container closes, not a single byte is written (Enter).
+// For elements that may be dropped as a whole; the default materializes an empty container, matching the input.
 func (a Action) Lazy() Action { a.lazy = true; return a }
 
-// Via：把这个容器内部的全部回调（OnKey / OnElem / OnStart / OnValue / OnPrefix / OnLeave、Defer 回放）
-// 交给子 hook；子 hook 自己 Enter 的更深层也归它。容器本身闭合时的 OnLeave 回到发起 Enter 的一方，
-// 让它收尾（如 Pop 自建的输出层）。路径与深度仍是绝对的。
+// Via hands every callback inside this container (OnKey / OnElem / OnStart / OnValue / OnPrefix / OnLeave and Defer replays)
+// to a sub-hook, which also owns the deeper levels it enters itself. OnLeave of the container itself goes back to whoever
+// issued the Enter so it can finish up (Pop an output level it built, say). Paths and depths stay absolute.
 func (a Action) Via(h Protocol) Action { a.via = h; return a }
 
-// Lenient：Enter 遇到非容器值时退化为 Pass 而不是 Bail（Enter）。
+// Lenient: Enter degrades to Pass on a non-container value instead of a Bail (Enter).
 func (a Action) Lenient() Action { a.lenient = true; return a }
 
-// IsCapture 报告这是不是 Capture 动作（协议在包装另一个协议的决定时会用到）。
+// IsCapture reports whether this is a Capture action (used by protocols that wrap another protocol's decision).
 func (a Action) IsCapture() bool { return a.kind == akCapture }
 
-// ValueKind 是 Probe 回调时告知协议的值类型。
+// ValueKind is the kind of value reported to the protocol by the Probe callback.
 type ValueKind uint8
 
 const (
 	KindString ValueKind = iota
 	KindObject
 	KindArray
-	KindNull   // 字面量 null
+	KindNull   // the literal null
 	KindBool   // true / false
-	KindNumber // 数字
+	KindNumber // a number
 )
 
-// IsScalar 报告是否为标量（null / bool / number；字符串单列为 KindString）。
+// IsScalar reports whether the kind is a scalar (null / bool / number; strings are KindString on their own).
 func (k ValueKind) IsScalar() bool { return k >= KindNull }
 
-// IsContainer 报告是否为对象或数组。
+// IsContainer reports whether the kind is an object or an array.
 func (k ValueKind) IsContainer() bool { return k == KindObject || k == KindArray }
 
 func (k ValueKind) String() string {
@@ -121,32 +121,32 @@ func (k ValueKind) String() string {
 	return "?"
 }
 
-// Protocol 是一个目标协议的全部流式处理逻辑。
+// Protocol is the complete streaming logic of one target protocol.
 //
-// 所有回调都在扫描过程中同步发生；raw 只在回调期间有效，要保留必须拷贝。
-// 回调里可以通过 t 读取当前路径、写输出（t.W()）、请求回放（t.Release()）、
-// 判定不支持（t.Bail()）。
+// Every callback happens synchronously during the scan; raw is only valid during the callback and must be copied to be kept.
+// Inside a callback t gives access to the current path, the output (t.W()), replay requests (t.Release())
+// and bailing (t.Bail()).
 type Protocol interface {
-	// OnKey：扫到一个 key。t.Path 已包含该 key。
+	// OnKey: a key was scanned. t.Path already includes it.
 	OnKey(t *Transformer) Action
-	// OnElem：扫到一个数组元素的开头。t.Path 已包含下标。
+	// OnElem: the start of an array element was scanned. t.Path already includes the index.
 	OnElem(t *Transformer) Action
-	// OnStart：Probe 之后，值的第一个字节到达，告知类型，要求最终动作。
+	// OnStart: after Probe, the first byte of the value arrived; the kind is reported and the final action is requested.
 	OnStart(t *Transformer, kind ValueKind) Action
-	// OnValue：Capture / Observe 的值到齐。
+	// OnValue: a Capture / Observe value is complete.
 	OnValue(t *Transformer, raw []byte)
-	// OnPrefix：Prefix 的窗口攒满（complete=false）或字符串在窗口内就结束了（complete=true）。
-	// raw 是字符串内容的原始字节（含转义、不含引号）。
-	// 返回后续动作（Pass 或 Skip 或 Bail）与 resume：raw[resume:] 会紧接 prefix 之后输出。
+	// OnPrefix: the Prefix window is full (complete=false) or the string ended inside the window (complete=true).
+	// raw is the raw bytes of the string content (escapes included, quotes excluded).
+	// Returns the follow-up action (Pass, Skip or Bail) and resume: raw[resume:] is written right after the prefix.
 	OnPrefix(t *Transformer, raw []byte, complete bool) (Action, int)
-	// OnLeave：Enter 的容器闭合。t.Path 仍指向该容器。
+	// OnLeave: an entered container closed. t.Path still points at the container.
 	OnLeave(t *Transformer)
-	// Tail：根对象闭合后、输出结尾 } 之前——规则 4 的"新增字段放最后"。
+	// Tail: after the root object closed and before the closing } is written; where rule 4 puts "added fields go last".
 	Tail(t *Transformer)
 }
 
-// BaseProtocol 给出全部回调的空实现（一律 Pass / 不动作）。
-// 协议或子 hook 嵌入它之后只需覆盖自己关心的回调，新协议从"什么都直通"起步。
+// BaseProtocol provides empty implementations of every callback (always Pass / no action).
+// A protocol or sub-hook embeds it and overrides only the callbacks it cares about; a new protocol starts from "everything passes through".
 type BaseProtocol struct{}
 
 func (BaseProtocol) OnKey(*Transformer) Action                         { return Pass() }

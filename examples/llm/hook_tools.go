@@ -1,18 +1,18 @@
 package llm
 
-// 可复用的子 hook：OpenAI `tools` 数组的逐元素流式映射。
+// Reusable sub-hook: element-by-element streaming of the OpenAI `tools` array.
 //
-// 官方 Claude / Gemini 都把 `tools[i].function` 解成同一个 function struct
-// （description omitempty、name 必有、parameters 为空 map 或 nil 时省略）再各自包一层。
-// 这里把"逐元素直通、parameters 内部原样、omitempty 语义"做成协议可以挂载的部件：
-// 协议在 tools 数组上 `Enter().Via(&hook)`，只决定外层怎么包、parameters 在输出侧叫什么。
+// The buffered Claude and Gemini paths both decode `tools[i].function` into the same function struct
+// (description omitempty, name always present, parameters omitted when it is an empty map or nil) and wrap it their own way.
+// This turns "pass elements through, keep the inside of parameters verbatim, omitempty semantics" into a part a protocol can mount:
+// the protocol does `Enter().Via(&hook)` on the tools array and only decides the outer wrapping and the output name of parameters.
 //
-// 约定 tools 数组本身位于路径深度 1（t.Key(0) == "tools"），元素在深度 2，function 在深度 3，
-// function 的字段在深度 4，parameters 内部 ≥ 5。数组闭合的 OnLeave 回到协议（Gemini 要 Pop 自建的层）。
+// The tools array itself is assumed at path depth 1 (t.Key(0) == "tools"), elements at depth 2, function at depth 3,
+// function fields at depth 4 and the inside of parameters at depth ≥ 5. OnLeave of the array goes back to the protocol (Gemini pops the level it built).
 type ToolsHook struct {
 	BaseProtocol
 
-	// ParamsKey 输出侧 parameters 的 key（Claude 是 input_schema，Gemini 是 parameters）。
+	// ParamsKey is the output key of parameters (input_schema for Claude, parameters for Gemini).
 	ParamsKey string
 
 	elem struct {
@@ -21,13 +21,13 @@ type ToolsHook struct {
 	}
 }
 
-// OnElem：tools[i]
+// OnElem: tools[i]
 func (h *ToolsHook) OnElem(t *Transformer) Action { return Probe() }
 
-// OnKey：tools 下的 key（深度 3 起）
+// OnKey: keys under tools (from depth 3)
 func (h *ToolsHook) OnKey(t *Transformer) Action {
 	switch t.Depth() {
-	case 3: // tools[i].K：官方 tool struct 只读 function（type 不进输出）
+	case 3: // tools[i].K: the buffered tool struct reads only function (type is not written)
 		if t.Last() == "function" {
 			return Probe()
 		}
@@ -39,60 +39,60 @@ func (h *ToolsHook) OnKey(t *Transformer) Action {
 		}
 		return Skip()
 	}
-	return Pass() // parameters 内部：原样
+	return Pass() // inside parameters: verbatim
 }
 
-// OnStart：值类型判定
+// OnStart: value kind decisions
 func (h *ToolsHook) OnStart(t *Transformer, kind ValueKind) Action {
 	switch t.Depth() {
 	case 2: // tools[i]
-		if kind == KindNull { // 官方解成零值 struct，仍输出一个元素
+		if kind == KindNull { // decoded as a zero-value struct by the buffered path, still written as an element
 			w := t.W()
 			w.Elem()
 			w.RawString(`{"name":""}`)
 			return Skip()
 		}
 		if kind != KindObject {
-			return Bail("tools 元素不是对象，官方 struct 解析失败")
+			return Bail("tools element is not an object, the buffered struct decoding fails")
 		}
 		h.elem.nameSeen, h.elem.fnSeen = false, false
-		return Enter() // 官方总会输出这个元素（哪怕 function 缺失，也有 "name":""）
+		return Enter() // the buffered path always writes this element ("name":"" even when function is missing)
 	case 3: // function
 		switch kind {
 		case KindObject:
 			h.elem.fnSeen = true
 			return Enter().Flat()
-		case KindNull: // struct 零值，等价于缺失
+		case KindNull: // zero-value struct, same as missing
 			return Skip()
 		}
-		return Bail("tools[].function 不是对象，官方 struct 解析失败")
+		return Bail("tools[].function is not an object, the buffered struct decoding fails")
 	case 4:
 		switch t.Last() {
 		case "name":
 			if kind != KindString {
-				return Bail("tools[].function.name 不是字符串，官方 struct 解析失败")
+				return Bail("tools[].function.name is not a string, the buffered struct decoding fails")
 			}
 			h.elem.nameSeen = true
 			return Pass()
 		case "description":
 			if kind != KindString {
-				return Bail("tools[].function.description 不是字符串，官方 struct 解析失败")
+				return Bail("tools[].function.description is not a string, the buffered struct decoding fails")
 			}
-			return Prefix(1) // omitempty：空串不输出
+			return Prefix(1) // omitempty: an empty string is not written
 		case "parameters":
 			switch kind {
 			case KindObject:
-				return Enter().As(h.ParamsKey).Lazy() // 空对象：omitempty 省略
+				return Enter().As(h.ParamsKey).Lazy() // empty object: omitted by omitempty
 			case KindNull:
 				return Skip()
 			}
-			return Bail("tools[].function.parameters 不是对象，官方 struct 解析失败")
+			return Bail("tools[].function.parameters is not an object, the buffered struct decoding fails")
 		}
 	}
 	return Pass()
 }
 
-// OnPrefix：description 的空串判定
+// OnPrefix: the empty-string decision for description
 func (h *ToolsHook) OnPrefix(t *Transformer, raw []byte, complete bool) (Action, int) {
 	if complete && len(raw) == 0 {
 		return Skip(), 0
@@ -101,7 +101,7 @@ func (h *ToolsHook) OnPrefix(t *Transformer, raw []byte, complete bool) (Action,
 	return Pass().Wrap(lit0, lit0), 0
 }
 
-// OnLeave：tools[i] 闭合时补官方 struct 里没有 omitempty 的 name
+// OnLeave: when tools[i] closes, add the name the buffered struct writes without omitempty
 func (h *ToolsHook) OnLeave(t *Transformer) {
 	if t.Depth() == 2 && (!h.elem.fnSeen || !h.elem.nameSeen) {
 		w := t.W()

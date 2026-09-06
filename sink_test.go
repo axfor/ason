@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// feedSink 用 sink 收输出；与 Out() 路径的结果必须逐字节相同。
+// feedSink collects the output through a sink; the result must be byte-identical to the Out() path.
 func feedSink(tr *Transformer, in string, chunk int) (string, bool, string) {
 	var sb bytes.Buffer
 	tr.SetSink(func(b []byte) { sb.Write(b) })
@@ -17,11 +17,11 @@ func feedSink(tr *Transformer, in string, chunk int) (string, bool, string) {
 		}
 		tr.Write([]byte(in[i:j]))
 		if out := tr.Out(); out != nil {
-			panic("设了 sink 之后 Out() 应返回空")
+			panic("Out() should return nothing once a sink is set")
 		}
 	}
 	if out := tr.Finish(); out != nil {
-		panic("设了 sink 之后 Finish() 应返回空")
+		panic("Finish() should return nothing once a sink is set")
 	}
 	if u, why := tr.Unsupported(); u {
 		return "", false, why
@@ -45,14 +45,14 @@ func TestSinkMatchesOut(t *testing.T) {
 				want, ok1, _ := feedAll(m(), in, cs)
 				got, ok2, why := feedSink(m(), in, cs)
 				if ok1 != ok2 || got != want {
-					t.Fatalf("chunk=%d: sink 与 Out 不一致 (ok %v/%v %s)\n got %d 字节\nwant %d 字节", cs, ok1, ok2, why, len(got), len(want))
+					t.Fatalf("chunk=%d: sink and Out differ (ok %v/%v %s)\n got %d bytes\nwant %d bytes", cs, ok1, ok2, why, len(got), len(want))
 				}
 			}
 		}
 	}
 }
 
-// 提交点之前判定不支持：sink 一个字节都不该收到；之后判定不支持：已交出的收不回，但之后不再交。
+// A bail before the commit point: the sink must not receive a single byte; after it, what was handed over cannot be taken back but nothing more is delivered.
 func TestSinkRespectsCommitPoint(t *testing.T) {
 	early := `{"a":1,"b":tru}`
 	var got bytes.Buffer
@@ -61,7 +61,7 @@ func TestSinkRespectsCommitPoint(t *testing.T) {
 	tr.Write([]byte(early))
 	tr.Finish()
 	if got.Len() != 0 {
-		t.Fatalf("提交前判定不支持，sink 却收到 %d 字节", got.Len())
+		t.Fatalf("bailed before the commit point, yet the sink received %d bytes", got.Len())
 	}
 	late := `{"pad":"` + strings.Repeat("y", 100<<10) + `","b":tru}`
 	got.Reset()
@@ -76,14 +76,14 @@ func TestSinkRespectsCommitPoint(t *testing.T) {
 	}
 	tr.Finish()
 	if bad, _ := tr.Unsupported(); !bad || !tr.Committed() {
-		t.Fatal("应在提交点之后判定不支持")
+		t.Fatal("should bail after the commit point")
 	}
 	if got.Len() == 0 || !strings.HasPrefix(late, got.String()) {
-		t.Fatalf("提交后交出的 %d 字节应是输入的前缀", got.Len())
+		t.Fatalf("the %d bytes delivered after the commit should be a prefix of the input", got.Len())
 	}
 }
 
-// sink 路径不再每块分配输出缓冲：整条 1MB 流的分配次数与块数无关。
+// The sink path no longer allocates an output buffer per chunk: the allocation count of a 1MB stream does not depend on the chunk count.
 func TestSinkReusesBuffer(t *testing.T) {
 	in := []byte(`{"messages":[{"role":"user","content":"` + strings.Repeat("z", 1<<20) + `"}]}`)
 	n := testing.AllocsPerRun(3, func() {
@@ -98,8 +98,8 @@ func TestSinkReusesBuffer(t *testing.T) {
 		}
 		tr.Finish()
 	})
-	if n > 24 { // 提交前的缓冲增长 + 一次块大小的复用缓冲 + 帧 / 路径（实测 17）；64 块若每块分配会远超此数
-		t.Fatalf("sink 路径每条流分配 %.0f 次，应与块数无关", n)
+	if n > 24 { // pre-commit buffer growth + one chunk-sized reusable buffer + frames / path (17 measured); per-chunk allocation over 64 chunks would far exceed this
+		t.Fatalf("the sink path allocates %.0f times per stream, should be independent of the chunk count", n)
 	}
 }
 

@@ -1,22 +1,22 @@
 package ason
 
-// KeyProbe 是"只关心顶层若干 key"的透传型协议：命中的 key 整个值攒下来交给回调（可原位替换），
-// 其余字节原样直通（空白、顺序、转义一个不改，效果与 sjson 的原地改写一致）。
+// KeyProbe is a passthrough protocol that only cares about a few top-level keys: the whole value of a matching key is collected
+// and handed to a callback (which may replace it in place), every other byte passes through unchanged (whitespace, order and escapes untouched, like sjson's in-place rewrite).
 //
-// 同一个 key 出现多次时只有第一次触发回调，后面的原样保留——与 gjson 取首个、sjson 改首个一致。
-// 需要更多状态的调用方可以嵌入 *KeyProbe 并覆盖 OnValue（先做自己的事再委托），
-// 例如在值到齐时顺便记录"是否已见到某个字段"。
+// When a key appears more than once only the first occurrence triggers the callback, the rest stay verbatim, as gjson reads the first and sjson rewrites the first.
+// Callers that need more state embed *KeyProbe and override OnValue (do their own work, then delegate),
+// for example to note "field X has been seen" as values complete.
 type KeyProbeOptions struct {
-	// Keys：要捕获的顶层 key 及其字节上限（超出上限判定不支持）。
+	// Keys: the top-level keys to capture and their byte caps (exceeding a cap bails).
 	Keys map[string]int
-	// OnKey：值到齐时回调。raw 是值的原始 JSON 文本；返回 (replacement, true) 则用 replacement 原位替换，
-	// 否则原样写回。回调内可用 t.Bail 判定不支持。
+	// OnKey is called when a value is complete. raw is the raw JSON text of the value; returning (replacement, true) replaces it in
+	// place, otherwise it is written back unchanged. The callback may bail with t.Bail.
 	OnKey func(t *Transformer, key string, raw []byte) (replacement []byte, replace bool)
-	// Observe：只观察不改写。key 与值原样直通，回调只拿到副本（此时 OnKey 的返回值被忽略）。
+	// Observe: observe only, no rewriting. Key and value pass through unchanged and the callback gets a copy (the return value of OnKey is ignored).
 	Observe bool
 }
 
-// KeyProbe 实现 Protocol。
+// KeyProbe implements Protocol.
 type KeyProbe struct {
 	BaseProtocol
 	Opt  KeyProbeOptions
@@ -24,17 +24,17 @@ type KeyProbe struct {
 	vals map[string][]byte
 }
 
-// NewKeyProbe 构造探针协议（配合 NewTransformer 使用，或用 NewKeyProbeTransformer）。
+// NewKeyProbe builds the probe protocol (for NewTransformer, or use NewKeyProbeTransformer).
 func NewKeyProbe(opt KeyProbeOptions) *KeyProbe {
 	return &KeyProbe{Opt: opt, seen: map[string]bool{}, vals: map[string][]byte{}}
 }
 
-// NewKeyProbeTransformer 是 NewTransformer(NewKeyProbe(opt)) 的简写。
+// NewKeyProbeTransformer is shorthand for NewTransformer(NewKeyProbe(opt)).
 func NewKeyProbeTransformer(opt KeyProbeOptions) *Transformer {
 	return NewTransformer(NewKeyProbe(opt))
 }
 
-// Captured 返回已捕获的顶层 key 的原始值（第一次出现的那个），扫描结束后可用。
+// Captured returns the raw values of the captured top-level keys (the first occurrence of each), available after the scan.
 func (p *KeyProbe) Captured() map[string][]byte { return p.vals }
 
 func (p *KeyProbe) OnKey(t *Transformer) Action {

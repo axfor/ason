@@ -6,9 +6,9 @@ import (
 	"testing"
 )
 
-// 一个用来验证框架机制的最小协议：
-// keep → Pass；drop → Skip；ren → 改名；wrap → 加壳；cap → Capture 后改写；
-// late → Defer 直到 sig 到达；box → Enter（Lazy）；img → Prefix。
+// A minimal protocol that exercises the framework mechanics:
+// keep → Pass; drop → Skip; ren → rename; wrap → wrap; cap → Capture then rewrite;
+// late → Defer until sig arrives; box → Enter (Lazy); img → Prefix.
 type probeProto struct {
 	sigSeen bool
 	tail    string
@@ -44,7 +44,7 @@ func (p *probeProto) OnKey(t *Transformer) Action {
 		return Pass()
 	}
 	if t.Depth() == 2 && t.Key(0) == "box" {
-		return Skip() // box 里什么都不留 → Lazy 应整个消失
+		return Skip() // nothing is kept inside box → Lazy should make it vanish entirely
 	}
 	return Pass()
 }
@@ -65,9 +65,9 @@ func (p *probeProto) OnValue(t *Transformer, raw []byte) {
 	}
 }
 func (p *probeProto) OnPrefix(t *Transformer, raw []byte, complete bool) (Action, int) {
-	// 前 3 个字节是"协议头"，丢掉；剩下的原样流出
+	// the first 3 bytes are a "protocol header", dropped; the rest streams out unchanged
 	if len(raw) < 3 {
-		return Bail("太短"), 0
+		return Bail("too short"), 0
 	}
 	t.W().Key("img_body")
 	return Pass().Wrap([]byte(`"`), []byte(`"`)), 3
@@ -97,7 +97,7 @@ func runProbe(t *testing.T, in string, chunk int, tail string) (map[string]any, 
 	}
 	var m map[string]any
 	if err := json.Unmarshal([]byte(sb.String()), &m); err != nil {
-		t.Fatalf("输出非法 JSON: %v\n%s", err, sb.String())
+		t.Fatalf("output is not valid JSON: %v\n%s", err, sb.String())
 	}
 	return m, sb.String()
 }
@@ -108,7 +108,7 @@ func TestEngineActions(t *testing.T) {
 	for _, cs := range []int{1, 2, 3, 7, 4096} {
 		m, out := runProbe(t, in, cs, "T")
 		if m == nil {
-			t.Fatalf("chunk=%d 意外回落: %s", cs, out)
+			t.Fatalf("chunk=%d unexpected fallback: %s", cs, out)
 		}
 		want := map[string]string{
 			"keep":           `{"a":[1,"x",{"b":null}]}`,
@@ -124,39 +124,39 @@ func TestEngineActions(t *testing.T) {
 		}
 		_ = want
 		if _, has := m["drop"]; has {
-			t.Errorf("chunk=%d drop 应被丢弃", cs)
+			t.Errorf("chunk=%d drop should be dropped", cs)
 		}
 		if _, has := m["box"]; has {
-			t.Errorf("chunk=%d Lazy 的空容器应整个消失", cs)
+			t.Errorf("chunk=%d the empty Lazy container should vanish entirely", cs)
 		}
 		if _, has := m["sig"]; has {
-			t.Errorf("chunk=%d Capture 的值不应直接输出", cs)
+			t.Errorf("chunk=%d a Captured value must not be written directly", cs)
 		}
 		if m["renamed"] != "r" || m["img_body"] != "payload" || m["inner"] != `<a"b>` || m["tail"] != "T" {
-			t.Errorf("chunk=%d 输出不对: %s", cs, out)
+			t.Errorf("chunk=%d wrong output: %s", cs, out)
 		}
 		if a, _ := m["arr"].([]any); a == nil {
-			t.Errorf("chunk=%d 非 Lazy 的空容器应物化为 []: %s", cs, out)
+			t.Errorf("chunk=%d a non-Lazy empty container should materialize as []: %s", cs, out)
 		}
 		late, _ := m["late_after_sig"].(map[string]any)
 		if late == nil {
-			t.Errorf("chunk=%d Defer 的值应在 sig 之后回放: %s", cs, out)
+			t.Errorf("chunk=%d the Deferred value should be replayed after sig: %s", cs, out)
 		}
-		// 顺序：late 在 sig 之后被回放，因此排在 renamed/wrap 之后
+		// order: late is replayed after sig, so it comes after renamed/wrap
 		if strings.Index(out, `"late_after_sig"`) < strings.Index(out, `"wrap"`) {
-			t.Errorf("chunk=%d 回放顺序不对: %s", cs, out)
+			t.Errorf("chunk=%d wrong replay order: %s", cs, out)
 		}
 	}
 }
 
 func TestEngineSyntaxBails(t *testing.T) {
-	// 只有派发帧里的语法错误会被发现；Pass 区域内部是字节透传，不做校验（由上游拒绝）。
+	// Every syntax error is detected, inside dispatch frames as well as inside Pass regions.
 	for _, in := range []string{`[1]`, `{"a":1,}`, `{"a" 1}`, `{"a":1}x`, `{"a":{"b":1}`, `{,"a":1}`, `{"a":1 "b":2}`, `{"a":}`} {
 		tr := NewTransformer(&probeProto{})
 		tr.Write([]byte(in))
 		tr.Finish()
 		if bad, _ := tr.Unsupported(); !bad {
-			t.Errorf("%q 应 Bail", in)
+			t.Errorf("%q should Bail", in)
 		}
 	}
 }
@@ -167,7 +167,7 @@ func TestDeferOverflowBails(t *testing.T) {
 	tr.Write([]byte(in))
 	tr.Finish()
 	if bad, why := tr.Unsupported(); !bad || tr.Err().Code != ErrLimit {
-		t.Errorf("Defer 超上限应 Bail: %v %s", bad, why)
+		t.Errorf("a Defer above its cap should Bail: %v %s", bad, why)
 	}
 }
 
@@ -188,47 +188,47 @@ func TestReleaseFromEnteringCallback(t *testing.T) {
 	tr.Write([]byte(in))
 	out := string(tr.Finish())
 	if bad, why := tr.Unsupported(); bad {
-		t.Fatalf("意外回落: %s", why)
+		t.Fatalf("unexpected fallback: %s", why)
 	}
 	var m map[string]any
 	if err := json.Unmarshal([]byte(out), &m); err != nil {
-		t.Fatalf("非法 JSON: %v %s", err, out)
+		t.Fatalf("invalid JSON: %v %s", err, out)
 	}
 	if m["late_after_sig"] != float64(1) || m["keep"] != float64(2) {
-		t.Errorf("Defer 项应在回到本帧后回放: %s", out)
+		t.Errorf("the Defer items should be replayed once this frame is back: %s", out)
 	}
 }
 
-// 协议既不回放也不丢弃 Defer 项：引擎必须 Bail，而不是静默吞掉。
+// A protocol that neither replays nor drops its Defer items: the engine must Bail rather than swallow them silently.
 type forgetfulProto struct{ probeProto }
 
-func (p *forgetfulProto) OnValue(t *Transformer, raw []byte) {} // 不再 Release
+func (p *forgetfulProto) OnValue(t *Transformer, raw []byte) {} // no Release any more
 
 func TestLeftoverDeferredBails(t *testing.T) {
 	tr := NewTransformer(&forgetfulProto{})
 	tr.Write([]byte(`{"late":{"important":true},"sig":1,"keep":2}`))
 	tr.Finish()
 	if bad, why := tr.Unsupported(); !bad || tr.Err().Code != ErrLeftoverDefer {
-		t.Errorf("残留 Defer 项应 Bail: %v %s", bad, why)
+		t.Errorf("leftover Defer items should Bail: %v %s", bad, why)
 	}
 }
 
-// 回放标量时补的分隔符不能泄漏成闭合前空白。
+// The separator added when replaying a scalar must not leak as whitespace before the closing bracket.
 func TestReplayScalarNoWhitespaceLeak(t *testing.T) {
 	tr := NewTransformer(&probeProto{})
 	tr.Write([]byte(`{"late":1,"sig":1}`))
 	out := string(tr.Finish())
 	if out != `{"late_after_sig":1}` {
-		t.Errorf("回放后多出空白: %q", out)
+		t.Errorf("extra whitespace after the replay: %q", out)
 	}
 }
 
-// 缓冲超限 Bail 之后不能再把残缺数据交给协议回调。
+// After a buffer-overflow Bail, truncated data must not reach the protocol callbacks.
 type panicOnValueProto struct{ probeProto }
 
 func (p *panicOnValueProto) OnValue(t *Transformer, raw []byte) {
 	if t.Last() == "cap" && len(raw) < 100 {
-		panic("协议拿到了截断的缓冲")
+		panic("the protocol received a truncated buffer")
 	}
 }
 
@@ -237,6 +237,6 @@ func TestNoCallbackAfterBail(t *testing.T) {
 	tr.Write([]byte(`{"cap":"` + strings.Repeat("x", 100) + `"}`))
 	tr.Finish()
 	if bad, _ := tr.Unsupported(); !bad {
-		t.Error("超过 Capture 上限应 Bail")
+		t.Error("exceeding the Capture cap should Bail")
 	}
 }

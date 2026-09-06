@@ -1,4 +1,4 @@
-// 脱敏：Prefix(n) 只攒字符串的前 n 字节，写出前缀后 Skip 掉剩余部分——不管多长的密钥都不进内存。
+// Redaction: Prefix(n) collects only the first n bytes of the string, writes the prefix and Skips the rest; a secret of any length never enters memory.
 //
 //	echo '{"api_key":"sk-1234567890abcdef","user":"u"}' | go run ./examples/redact
 package main

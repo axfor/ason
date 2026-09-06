@@ -12,26 +12,26 @@ func TestOpenAIPassthroughShape(t *testing.T) {
 	out := string(tr.Finish())
 	var m map[string]any
 	if err := json.Unmarshal([]byte(out), &m); err != nil {
-		t.Fatalf("非法 JSON: %v %s", err, out)
+		t.Fatalf("invalid JSON: %v %s", err, out)
 	}
 	if m["model"] != "M:gpt-4o" {
-		t.Errorf("model 未改写: %s", out)
+		t.Errorf("model not rewritten: %s", out)
 	}
 	if so, _ := m["stream_options"].(map[string]any); so == nil || so["include_usage"] != true {
-		t.Errorf("stream_options.include_usage 未补: %s", out)
+		t.Errorf("stream_options.include_usage not added: %s", out)
 	}
 	if x, _ := m["x"].(map[string]any); x == nil || x["model"] != "inner" {
-		t.Errorf("嵌套对象里的 model 不应被改: %s", out)
+		t.Errorf("model inside a nested object must not be changed: %s", out)
 	}
 	if p, ok := tr.Protocol().(Preluder); !ok || !p.Prelude().Stream || !p.Prelude().StreamSeen {
-		t.Errorf("Prelude 未报告 stream")
+		t.Errorf("Prelude did not report stream")
 	}
-	// 集成层要用原始 model 写上下文键（响应侧的模型名、Azure 的请求路径都靠它）
+	// the integration layer writes the context keys from the original model (the response-side model name and the Azure request path depend on it)
 	if pre := tr.Protocol().(Preluder).Prelude(); !pre.ModelSeen || pre.Model != "gpt-4o" {
-		t.Errorf("Prelude 未报告原始 model: %+v", pre)
+		t.Errorf("Prelude did not report the original model: %+v", pre)
 	}
 }
 
-// ---- 评审发现的回归用例 ----
+// ---- regression cases from review ----
 
-// Release 在返回 Enter 的回调里被调用：回放必须发生在本帧回到安全点时，不能被子帧消费掉。
+// Release called from a callback that returns Enter: the replay must happen when this frame is back at a safe point, not be consumed by the child frame.
