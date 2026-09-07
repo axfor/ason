@@ -175,6 +175,7 @@ type Transformer struct {
 	unsupported bool
 	err         *Error
 	sink        func([]byte)
+	chunkLen    int   // length of the chunk handed to the current Write (for Unchanged)
 	limitAt     int   // on a cap / budget overflow: how many bytes of this append still fit (locates the first byte that does not)
 	scanBase    int64 // offset of the current Write chunk within the whole input
 	replaying   int   // > 0: replaying Defer items (nested scan), error offsets take the outer position
@@ -265,6 +266,19 @@ func (t *Transformer) Unsupported() (bool, string) {
 	return true, t.err.Error()
 }
 
+// SetOutBuffer hands the transformer a buffer to build output in, owned by the caller and reused for every
+// chunk and every stream. It removes the per-request allocation of the output buffer, which the allocation
+// profile shows to be almost all of it; on wasip1 that matters more than the copy itself, because the garbage
+// forces the Go runtime to collect while wasm linear memory never shrinks.
+//
+// Give it enough capacity for one commit window plus the largest chunk (128KB is a good default); a larger
+// output still works, it just grows the slice once. Everything Out() or the sink hands back points into this
+// buffer and stays valid only until the next Write / Finish. Must be called before the first Write.
+func (t *Transformer) SetOutBuffer(b []byte) {
+	t.w.buf = b[:0]
+	t.w.fixed = true
+}
+
 // SetSink sets an output receiver. Once set, output produced past the commit point in each Write / Finish goes straight to the
 // sink and the output buffer is reused instead of handed over: no allocation per chunk, and a stream no longer produces as much
 // garbage as it has input. Meant for callers that consume immediately (writing to a host or a connection). The sink must consume b before returning; b is invalid afterwards.
@@ -273,11 +287,21 @@ func (t *Transformer) SetSink(sink func(b []byte)) { t.sink = sink }
 
 // drain hands the releasable output to the sink (past the commit point, no bail).
 func (t *Transformer) drain(chunk int) {
-	if t.unsupported || !t.committed || len(t.w.buf) == 0 {
+	if t.unsupported || !t.committed {
+		return
+	}
+	if t.w.virt {
+		if t.w.vlen > 0 {
+			t.sink(t.w.vp[:t.w.vlen])
+			t.w.vlen = 0
+		}
+		return
+	}
+	if len(t.w.buf) == 0 {
 		return
 	}
 	t.sink(t.w.buf)
-	if cap(t.w.buf) > 2*chunk+4096 {
+	if !t.w.fixed && cap(t.w.buf) > 2*chunk+4096 {
 		t.w.buf = nil // do not keep the large pre-commit buffer; the next chunk allocates one of chunk size which is then reused
 		t.w.hint = chunk
 	} else {
@@ -285,9 +309,25 @@ func (t *Transformer) drain(chunk int) {
 	}
 }
 
+// Unchanged reports whether this Write produced exactly the bytes it was handed: past the commit point, with
+// nothing skipped, rewritten, generated, reordered or held back. The caller can then forward its own input and
+// skip taking the output at all — in a proxy that means not replacing the host buffer, so a pass-through chunk
+// costs no copy and no allocation. It is a per-Write property: an earlier chunk may well have been rewritten.
+func (t *Transformer) Unchanged() bool {
+	return t.committed && !t.unsupported && !t.w.touched && t.w.base == 0 && t.w.passed == t.chunkLen
+}
+
 // Out takes the releasable bytes. Returns nothing before the commit point, after a bail, or when a sink is set.
 func (t *Transformer) Out() []byte {
-	if t.unsupported || !t.committed || len(t.w.buf) == 0 || t.sink != nil {
+	if t.unsupported || !t.committed || t.sink != nil {
+		return nil
+	}
+	if t.w.virt { // never materialised: the output is a slice of the caller's chunk
+		b := t.w.vp[:t.w.vlen]
+		t.w.vlen = 0
+		return b
+	}
+	if len(t.w.buf) == 0 {
 		return nil
 	}
 	// Hand over ownership without copying or keeping capacity: the large pre-commit buffer (up to 128KB) becomes garbage right
@@ -295,7 +335,11 @@ func (t *Transformer) Out() []byte {
 	// concurrency from ~250KB down to a few dozen KB. The caller owns the slice; the next write allocates a new one.
 	b := t.w.buf
 	t.w.hint = len(b)
-	t.w.buf = nil
+	if t.w.fixed {
+		t.w.buf = b[:0] // caller-owned: valid until the next Write / Finish
+	} else {
+		t.w.buf = nil
+	}
 	return b
 }
 
@@ -305,6 +349,8 @@ func (t *Transformer) Write(p []byte) {
 		return
 	}
 	t.scanBase = int64(t.scanned)
+	t.chunkLen = len(p)
+	t.w.startChunk(p)
 	t.scanned += len(p)
 	t.w.reserve(len(p)) // allocate the output buffer once per chunk (reserved by the size handed over last time)
 	t.scan(p)
@@ -873,7 +919,7 @@ scan:
 // flush hands p[rs:end] to the region and returns the new rs (-1).
 func (t *Transformer) flush(p []byte, rs, end int) int {
 	if rs >= 0 && end > rs {
-		t.emitRegion(p[rs:end])
+		t.emitRegionAt(p, rs, end)
 		if t.dead && t.replaying == 0 { // cap / budget overflow: pin the offset to the first byte that did not fit
 			t.fixOffset(t.scanBase + int64(rs) + int64(t.limitAt))
 		}
@@ -1075,6 +1121,15 @@ func (t *Transformer) beginRegion(target regionTarget, act *Action) {
 }
 
 // emitRegion handles one run of raw bytes inside a region.
+// emitRegionAt handles p[from:to] inside a region; the offset lets the writer keep the pass-through run virtual.
+func (t *Transformer) emitRegionAt(p []byte, from, to int) {
+	if t.regT == rtOut && len(t.regSuf) == 0 {
+		t.w.passthroughAt(p, from, to)
+		return
+	}
+	t.emitRegion(p[from:to])
+}
+
 func (t *Transformer) emitRegion(b []byte) {
 	switch t.regT {
 	case rtOut:
