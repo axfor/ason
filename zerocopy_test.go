@@ -118,3 +118,30 @@ func TestFixedOutBufferReuse(t *testing.T) {
 		t.Fatalf("输出总量 %d，输入 %d", total, len(in))
 	}
 }
+
+// 支持的用法：一块缓冲按顺序复用给多条流，每条流的输出都必须正确。
+// （不支持的用法是并发交错共享——输出会在提交点前互相覆盖，文档已写明。）
+func TestFixedOutBufferSequentialReuse(t *testing.T) {
+	buf := make([]byte, 0, 128<<10)
+	for i := 0; i < 5; i++ {
+		in := `{"id":` + string(rune('0'+i)) + `,"pad":"` + strings.Repeat("x", 70<<10) + `"}`
+		tr := NewTransformer(BaseProtocol{})
+		tr.SetOutBuffer(buf)
+		var got bytes.Buffer
+		for j := 0; j < len(in); j += 16384 {
+			k := j + 16384
+			if k > len(in) {
+				k = len(in)
+			}
+			tr.Write([]byte(in[j:k]))
+			got.Write(tr.Out())
+		}
+		got.Write(tr.Finish())
+		if bad, why := tr.Unsupported(); bad {
+			t.Fatalf("第 %d 条流回落: %s", i, why)
+		}
+		if got.String() != in {
+			t.Fatalf("第 %d 条流输出不保真（复用缓冲被污染？）", i)
+		}
+	}
+}

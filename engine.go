@@ -274,6 +274,11 @@ func (t *Transformer) Unsupported() (bool, string) {
 // Give it enough capacity for one commit window plus the largest chunk (128KB is a good default); a larger
 // output still works, it just grows the slice once. Everything Out() or the sink hands back points into this
 // buffer and stays valid only until the next Write / Finish. Must be called before the first Write.
+//
+// One buffer belongs to one transformer for its whole life: output accumulates across chunks until the commit
+// point, so a buffer shared between concurrently running transformers would interleave their bytes. Share it
+// only where streams are strictly sequential (a CLI, a single-stream worker), never across a proxy's in-flight
+// requests.
 func (t *Transformer) SetOutBuffer(b []byte) {
 	t.w.buf = b[:0]
 	t.w.fixed = true
