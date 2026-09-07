@@ -357,7 +357,7 @@ func (t *Transformer) Write(p []byte) {
 	t.chunkLen = len(p)
 	t.w.startChunk(p)
 	t.scanned += len(p)
-	t.w.reserve(len(p)) // allocate the output buffer once per chunk (reserved by the size handed over last time)
+	t.w.hint = len(p) // size for the first real write; a chunk that stays virtual never allocates at all
 	t.scan(p)
 	t.fixOffset(int64(t.scanned))
 	if !t.committed && !t.unsupported {

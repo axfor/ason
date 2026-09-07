@@ -55,7 +55,7 @@ func (w *Writer) reserve(n int) {
 		return // caller-owned buffer: already sized, never reallocated here
 	}
 	if cap(w.buf) == 0 {
-		if n < w.hint {
+		if n < w.hint { // hint is the current chunk size: one allocation covers the whole chunk
 			n = w.hint
 		}
 		if n < 64 {
