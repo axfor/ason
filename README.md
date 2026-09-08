@@ -173,10 +173,14 @@ branch in each of the six callbacks.
 
 No output is released before `CommitBytes` (64KB) of input has been scanned. Inside that window a `Bail` costs
 nothing: the caller still holds every raw byte and can fall back to buffering the document and transforming it
-some other way. Past it, released bytes cannot be recalled, so a late bail is a failure — or, for a
-passthrough-shaped protocol, forwarding the rest verbatim, which is only safe while `RootDone()` is false;
-after that the bytes still held would be lost and the document would go out truncated. `Finish` runs `Tail`,
-closes the root and writes the whitespace that followed it.
+some other way. A caller that knows it no longer needs the retreat — it has seen every field its decision
+depends on — gives it up early with `CommitNow()`, and the window becomes a ceiling rather than a fixed cost.
+
+Past the commit point, released bytes cannot be recalled, so a late bail is a failure — or, for a
+passthrough-shaped protocol, forwarding the rest of the input verbatim. That is safe only where `Aligned()` is
+true (every byte read so far has been written out or dropped, nothing held back for a decision still to come)
+and `RootDone()` is still false, because the root's closing token is written by `Finish` alone — which also
+runs `Tail` and writes the whitespace that followed the root.
 
 ### Errors
 
@@ -301,9 +305,10 @@ ason 是 Go 的通用流式 JSON 转换框架：文档边到达边改写，按�
 - **子 hook**——`Enter().Via(hook)` 把整棵子树的回调（含它自己进入的更深层与 Defer 回放）交给另一个 Protocol，
   容器的 `OnLeave` 回到发起方以便 `Pop` 自己压的层；路径与深度保持绝对。
 - **提交窗口**——扫满 `CommitBytes`（64KB）之前不下发输出：窗口内 bail 不花任何代价，调用方还攥着全部原始字节，
-  可以整体缓冲换一条路；窗口外已下发的字节收不回来，只能失败，或（对透传型协议）原样转发剩余字节——
-  而后者只在 `RootDone()` 为 false 时安全，之后仍被引擎持有的字节会丢，文档会被截断。
-  `Finish` 跑 `Tail`、闭合根、补上根之后的空白。
+  可以整体缓冲换一条路；已经确定不再需要这条退路的调用方（决策依赖的字段都看完了）用 `CommitNow()` 提前放弃它，
+  窗口于是只是上限而不是固定成本。窗口外已下发的字节收不回来，只能失败，或（对透传型协议）原样转发剩余字节——
+  而后者只在 `Aligned()` 为 true（读进来的每个字节都已写出或已丢弃，没有任何字节还等着未定的判断）
+  且 `RootDone()` 仍为 false 时才安全：根的闭合括号只能由 `Finish` 写，它同时跑 `Tail` 并补上根之后的空白。
 - **按调用方本来要 unmarshal 的形状校验**——流式转换替掉的那条路最后是一次按类型拒绝的 `Unmarshal`；
   放行一份它会拒的文档，就等于流式这条路更宽松。所以把那个结构体交进来：`SetFieldTree(ason.FieldTreeOf(Req{}, 4))`。
   表是**反射推导**的，不是手写的（手写表在加字段那一刻就悄悄漂移）。它一律往"接受"偏：自解码类型
