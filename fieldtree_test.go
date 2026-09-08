@@ -213,3 +213,132 @@ func TestFieldTreeOnRandomDocuments(t *testing.T) {
 	t.Logf("Unmarshal 拒绝的用例里：根级校验能抓 %d 例，按树校验能抓 %d 例（%.1f 倍）",
 		rootCaught, treeCaught, float64(treeCaught)/float64(max(rootCaught, 1)))
 }
+
+// 接进引擎之后的判定，必须和离线走树的判定一致，而且同样永不严于 encoding/json。
+// 这是整套改动里唯一会把"本来能过的请求"变成"过不去"的地方，所以证据要按误拒来组织。
+func TestSetFieldTreeNeverRejectsWhatUnmarshalAccepts(t *testing.T) {
+	tree := FieldTreeOf(&treeRoot{}, 6)
+	rnd := rand.New(rand.NewSource(5))
+
+	var gen func(d int) string
+	gen = func(d int) string {
+		if d > 3 {
+			return []string{`1`, `"s"`, `true`, `null`, `1.5`, `[]`, `{}`}[rnd.Intn(7)]
+		}
+		switch rnd.Intn(4) {
+		case 0:
+			return []string{`1`, `"s"`, `true`, `null`, `[1,2]`, `{"k":1}`, `"é€😀"`, `"a\"b"`}[rnd.Intn(8)]
+		case 1:
+			return "[" + gen(d+1) + "," + gen(d+1) + "]"
+		default:
+			keys := []string{"name", "inner", "ptr", "list", "free", "a", "b", "m", "r", "x", "y", "n", "s", "zz"}
+			var b strings.Builder
+			b.WriteByte('{')
+			for i := 0; i < 1+rnd.Intn(3); i++ {
+				if i > 0 {
+					b.WriteByte(',')
+				}
+				fmt.Fprintf(&b, "%q:%s", keys[rnd.Intn(len(keys))], gen(d+1))
+			}
+			b.WriteByte('}')
+			return b.String()
+		}
+	}
+
+	falseReject, caught, checked := 0, 0, 0
+	for i := 0; i < 20000; i++ {
+		doc := `{"name":"x",` + strings.TrimPrefix(gen(1), "{")
+		if !json.Valid([]byte(doc)) {
+			continue
+		}
+		checked++
+		var into treeRoot
+		unmarshalOK := json.Unmarshal([]byte(doc), &into) == nil
+
+		for _, chunk := range []int{1, 13, 4096} {
+			tr := NewTransformer(BaseProtocol{})
+			tr.SetFieldTypes(FieldTypesOf(&treeRoot{}))
+			tr.SetFieldTree(tree)
+			var out []byte
+			for j := 0; j < len(doc); j += chunk {
+				k := j + chunk
+				if k > len(doc) {
+					k = len(doc)
+				}
+				tr.Write([]byte(doc[j:k]))
+				out = append(out, tr.Out()...)
+			}
+			out = append(out, tr.Finish()...)
+			bad, why := tr.Unsupported()
+
+			if unmarshalOK && bad {
+				falseReject++
+				if falseReject <= 3 {
+					t.Errorf("误拒（分块 %d）：%s\n  原因 %s", chunk, doc, why)
+				}
+				break
+			}
+			if !bad {
+				// 放行的请求，输出必须与输入逐字节相同（校验只读不改）
+				if string(out) != doc {
+					t.Fatalf("校验改动了输出（分块 %d）：\n 输入 %q\n 输出 %q", chunk, doc, string(out))
+				}
+			}
+			if !unmarshalOK && bad && chunk == 1 {
+				caught++
+			}
+		}
+	}
+	if falseReject > 0 {
+		t.Fatalf("误拒 %d 例 —— 有这个数就不能上线", falseReject)
+	}
+	t.Logf("%d 例：误拒 0，其中 Unmarshal 拒绝且引擎也拒绝 %d 例", checked, caught)
+}
+
+// 嵌套里的类型错误要真的被抓到，而且透传的字节不能被改动。
+func TestSetFieldTreeCatchesNestedMismatch(t *testing.T) {
+	tree := FieldTreeOf(&treeRoot{}, 6)
+	bad := []string{
+		`{"inner":{"a":"x"}}`,
+		`{"inner":{"b":[1]}}`,
+		`{"inner":{"m":{"k":"s"}}}`,
+		`{"inner":{"y":[{"n":"x"}]}}`,
+		`{"list":[{"a":"x"}]}`,
+		`{"ptr":{"a":[1,2]}}`,
+	}
+	for _, doc := range bad {
+		var into treeRoot
+		if json.Unmarshal([]byte(doc), &into) == nil {
+			t.Fatalf("用例失效，Unmarshal 居然接受了：%s", doc)
+		}
+		for _, chunk := range []int{1, 7, 4096} {
+			tr := NewTransformer(BaseProtocol{})
+			tr.SetFieldTree(tree)
+			for j := 0; j < len(doc); j += chunk {
+				k := j + chunk
+				if k > len(doc) {
+					k = len(doc)
+				}
+				tr.Write([]byte(doc[j:k]))
+				tr.Out()
+			}
+			tr.Finish()
+			if bad, _ := tr.Unsupported(); !bad {
+				t.Errorf("没抓到（分块 %d）：%s", chunk, doc)
+			}
+		}
+	}
+}
+
+// 超过校验缓冲上限的容器要放行，不能因为"太大看不完"就拒绝。
+func TestSetFieldTreeAcceptsOversizeContainer(t *testing.T) {
+	tree := FieldTreeOf(&treeRoot{}, 6)
+	doc := `{"inner":{"m":{"k":"` + strings.Repeat("y", 80<<10) + `"}}}`
+	tr := NewTransformer(BaseProtocol{})
+	tr.SetFieldTree(tree)
+	tr.Write([]byte(doc))
+	tr.Finish()
+	if bad, why := tr.Unsupported(); bad {
+		t.Fatalf("超过上限的容器被拒了：%s", why)
+	}
+}

@@ -98,6 +98,7 @@ const (
 	rtOut
 	rtSkip
 	rtCapture
+	rtValidate // like rtOut for the output, but the bytes are also kept (bounded) and type-checked at the close
 	rtDefer
 	rtObserve
 	rtPrefix
@@ -183,6 +184,9 @@ type Transformer struct {
 	rootSeen    bool
 	rootDone    bool
 	fieldTypes  map[string]FieldTypes // root-level field -> the JSON types it may have; nil disables the check
+	fieldTree   *FieldTree            // recursive form; nil disables nested checking
+	valSub      *FieldTree            // subtree for the region currently being validated
+	valOver     bool                  // that region outgrew the validation buffer: accept it rather than judge it
 }
 
 // NewTransformer builds a transformer with the given protocol.
@@ -256,6 +260,21 @@ func typeBit(k ValueKind) FieldTypes {
 //
 // A mismatch bails with ErrUnsupported, which before the commit point means the caller can still fall back.
 func (t *Transformer) SetFieldTypes(m map[string]FieldTypes) { t.fieldTypes = m }
+
+// SetFieldTree extends SetFieldTypes inside containers: a field whose own type is right can still hold a value
+// of the wrong type, which the unmarshal rejects and a root-level check cannot see.
+//
+// Only the containers the tree has an opinion about are checked, and only up to valCapBytes of content each;
+// past that the value is accepted rather than judged, so a large field never becomes a rejection. The bytes
+// still pass through unchanged -- the check reads a copy, it does not rewrite anything. Containers the tree says
+// nothing about keep the region fast path untouched.
+//
+// A mismatch bails with ErrUnsupported, which before the commit point still leaves the caller its fallback.
+func (t *Transformer) SetFieldTree(tr *FieldTree) { t.fieldTree = tr }
+
+// valCapBytes bounds what one validated container may hold. The fields worth checking this way are small by
+// nature -- metadata, logit_bias, response_format and the like -- so the bound is generous and rarely reached.
+const valCapBytes = 64 << 10
 
 // SetValidateUTF8 enables UTF-8 validation of strings and keys (RFC 3629: overlong encodings, surrogates, code points above
 // U+10FFFF, stray or missing continuation bytes are rejected, sequences split across chunks included). Off by default: encoding/json does not reject invalid UTF-8 either, it replaces it.
@@ -1100,6 +1119,13 @@ func (t *Transformer) apply(f *frame, act *Action, kind ValueKind) bool {
 		if act.kind == akObserve {
 			target = rtObserve
 		}
+		if target == rtOut && isContainer && len(act.suffix) == 0 {
+			if sub := t.validationSubtree(kind); sub != nil {
+				t.beginRegion(rtValidate, act)
+				t.regCap, t.valSub, t.valOver = valCapBytes, sub, false
+				return true
+			}
+		}
 		t.beginRegion(target, act)
 		return true
 	case akSkip:
@@ -1169,6 +1195,30 @@ func (t *Transformer) regPop() regPhase {
 	return rOComma
 }
 
+// validationSubtree returns the subtree to check this value against, or nil when there is nothing to check:
+// no tree set, not a root-level field, the tree has no opinion about this field, or it says nothing about what
+// is inside it -- in which case SetFieldTypes has already judged the value's own type and the region keeps its
+// fast path untouched.
+func (t *Transformer) validationSubtree(kind ValueKind) *FieldTree {
+	if t.fieldTree == nil || t.fieldTree.Keys == nil || len(t.path) != 1 {
+		return nil
+	}
+	sub, ok := t.fieldTree.Keys[t.path[0].k]
+	if !ok || sub == nil || sub.Any {
+		return nil
+	}
+	if sub.Keys == nil && sub.Elem == nil {
+		return nil // nothing said about the members
+	}
+	if kind == KindObject && sub.Types&TypeObject == 0 {
+		return nil // the value's own type is already wrong; SetFieldTypes reports that
+	}
+	if kind == KindArray && sub.Types&TypeArray == 0 {
+		return nil
+	}
+	return sub
+}
+
 func (t *Transformer) beginRegion(target regionTarget, act *Action) {
 	t.regN = 0
 	t.regDeep = t.regDeep[:0]
@@ -1202,6 +1252,16 @@ func (t *Transformer) emitRegion(b []byte) {
 	case rtObserve:
 		t.w.Raw(b)
 		t.capAppend(b)
+	case rtValidate:
+		t.w.Raw(b)
+		if !t.valOver {
+			// A soft cap, unlike capAppend's: outgrowing it stops the check, it does not fail the request.
+			if len(t.capBuf)+len(b) > t.regCap {
+				t.valOver, t.capBuf = true, t.capBuf[:0]
+			} else {
+				t.capBuf = append(t.capBuf, b...)
+			}
+		}
 	case rtPrefix:
 		room := t.regCap - len(t.capBuf)
 		if room >= len(b) {
@@ -1287,6 +1347,14 @@ func (t *Transformer) endRegion() {
 		t.cur().OnValue(t, t.capBuf)
 	case rtCapture:
 		t.cur().OnValue(t, t.capBuf)
+	case rtValidate:
+		if !t.valOver && t.valSub != nil {
+			if !validateAgainst(t.capBuf, t.valSub) {
+				t.BailErr(ErrUnsupported, "field "+t.path[0].k+" holds a value of the wrong type")
+				return
+			}
+		}
+		t.capBuf, t.valSub, t.valOver = t.capBuf[:0], nil, false
 	case rtDefer:
 		f := t.top()
 		raw := make([]byte, len(t.capBuf))
