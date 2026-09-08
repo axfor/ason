@@ -201,6 +201,9 @@ rejection while streaming:
 t.SetFieldTree(ason.FieldTreeOf(ChatRequest{}, 4)) // implies the root-level table
 ```
 
+The tree also carries the marshal side of every field (`Kind`, `Omit`, `Int`, `ZeroJSON`), for a protocol that
+reproduces a buffered path's unmarshal-and-marshal round trip; the engine itself does not read those.
+
 The table is *derived* from the struct by reflection (`FieldTypesOf` for root fields, `FieldTreeOf` for the
 recursive form), because a hand-kept one drifts from the struct the moment a field is added, and the drift is
 silent. It errs towards accepting throughout: a type that decodes itself (`json.Unmarshaler`,

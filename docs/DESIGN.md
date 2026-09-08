@@ -93,6 +93,18 @@ towards accepting throughout: a type with its own `UnmarshalJSON`, an interface,
 take everything. Rejecting a document the unmarshal would have accepted turns a passing request into a failing
 one; accepting one it would have rejected only leaves the check where it already was.
 
+### The marshal side of the same tree
+
+A buffered path sometimes edits a document *through* the struct: unmarshal, change a field, marshal back. That
+round trip changes the document's shape even where nothing was edited -- keys the struct has no field for are
+gone, the zero values of `omitempty` fields are gone, fields the document never had appear as their zero values,
+numbers come out the way `json.Marshal` writes them. A streaming caller that has to produce the same bytes needs
+the marshal side of every field, so the tree records it: what the Go value is (`FieldKind`: a string, a number,
+a bool, a struct, a pointer, a slice, a map, an interface, or a type that marshals itself and cannot be
+described), whether the tag says `omitempty`, whether a number field is an integer type (the decode rejects a
+fraction there, which the type check lets through on purpose), and `ZeroJSON`, what the marshal writes for the
+field's zero value. Nothing in the engine reads these; they exist for a protocol that reproduces the round trip.
+
 ## The commit point, and why it exists
 
 `Out()` returns nothing until `CommitBytes` (64KB by default, `SetCommitBytes` to change it) have been
