@@ -188,3 +188,42 @@ func TestReleasedPlusFinishedEqualsWholeOutputUnderAnySplit(t *testing.T) {
 		check(append(splits, len(body)))
 	}
 }
+
+// 共享 key 缓存之后，第二个文档起 key 的派发不再分配：同一个 VM 上的请求 key 集合几乎相同，
+// 每个请求重新"认识"一遍 model / messages / role 是纯浪费。
+func TestSharedKeyCacheStopsPerRequestKeyAllocs(t *testing.T) {
+	body := []byte(`{"model":"m","messages":[{"role":"system","content":"S"},{"role":"user","content":"` +
+		strings.Repeat("x", 4096) + `"}],"max_tokens":16,"temperature":0.7,"stream":true,` +
+		`"tools":[{"type":"function","function":{"name":"f","description":"d","parameters":{"type":"object"}}}]}`)
+	run := func(c *KeyCache) {
+		tr := NewTransformer(BaseProtocol{})
+		if c != nil {
+			tr.SetKeyCache(c)
+		}
+		tr.Write(body)
+		tr.Out()
+		tr.Finish()
+		if bad, why := tr.Unsupported(); bad {
+			t.Fatal(why)
+		}
+	}
+	// 各自一份缓存：每个请求都为每个 distinct key 分配
+	perReq := testing.AllocsPerRun(50, func() { run(nil) })
+	// 共享一份：热身一次之后归零
+	shared := NewKeyCache()
+	run(shared)
+	sharedReq := testing.AllocsPerRun(50, func() { run(shared) })
+	t.Logf("每转换器一份缓存: %.1f 次分配/请求；共享缓存: %.1f 次分配/请求", perReq, sharedReq)
+	if sharedReq >= perReq {
+		t.Fatalf("共享缓存没有减少分配：%.1f vs %.1f", sharedReq, perReq)
+	}
+	// 键的输出必须与不共享时逐字节一致（缓存只影响分配，不影响语义）
+	a, b := NewTransformer(BaseProtocol{}), NewTransformer(BaseProtocol{})
+	b.SetKeyCache(shared)
+	a.Write(body)
+	b.Write(body)
+	oa, ob := append(a.Out(), a.Finish()...), append(b.Out(), b.Finish()...)
+	if string(oa) != string(ob) {
+		t.Fatal("共享缓存改变了输出")
+	}
+}

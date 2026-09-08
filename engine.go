@@ -108,6 +108,18 @@ const (
 // repeated keys (the vast majority of dispatches in normal documents) no longer allocate, and adversarial input with a flood of distinct keys cannot make it grow.
 const keyCacheSize = 256
 
+// KeyCache interns the keys a transformer meets, so a key seen before costs no allocation. One is created for
+// each transformer by default, which means every request pays once for every distinct key it has -- and the
+// keys of one request are the keys of the next. SetKeyCache shares one across transformers instead; after the
+// first document on it, dispatching a key allocates nothing.
+//
+// A cache belongs to one goroutine at a time: transformers on one Envoy worker interleave but never run
+// concurrently, which is the case it is for. Sharing one across goroutines is a data race.
+type KeyCache [keyCacheSize]string
+
+// NewKeyCache returns an empty cache to share with SetKeyCache.
+func NewKeyCache() *KeyCache { return new(KeyCache) }
+
 // CommitBytes is the commit window: no output is released before this many input bytes have been scanned.
 // A bail before that point leaves the caller holding every raw byte, so it can fall back cleanly.
 const CommitBytes = 64 << 10
@@ -140,8 +152,8 @@ type Transformer struct {
 	wsRaw       []byte
 	elemWs      []byte
 	rootCloseWs []byte
-	tailWs      []byte                // whitespace after the root object (a trailing newline, say): written verbatim in Finish
-	keys        *[keyCacheSize]string // key intern cache (direct-mapped, slot chosen by a hash of the key bytes)
+	tailWs      []byte    // whitespace after the root object (a trailing newline, say): written verbatim in Finish
+	keys        *KeyCache // key intern cache (direct-mapped, slot chosen by a hash of the key bytes); shared with SetKeyCache
 
 	validateUTF8 bool
 	u8           utf8State
@@ -289,6 +301,10 @@ func (t *Transformer) SetFieldTree(tr *FieldTree) {
 // valCapBytes bounds what one validated container may hold. The fields worth checking this way are small by
 // nature -- metadata, logit_bias, response_format and the like -- so the bound is generous and rarely reached.
 const valCapBytes = 64 << 10
+
+// SetKeyCache shares a key intern cache with other transformers, so the keys one document taught it cost the
+// next document nothing. Must be called before the first Write. See KeyCache for the ownership rule.
+func (t *Transformer) SetKeyCache(c *KeyCache) { t.keys = c }
 
 // SetValidateUTF8 enables UTF-8 validation of strings and keys (RFC 3629: overlong encodings, surrogates, code points above
 // U+10FFFF, stray or missing continuation bytes are rejected, sequences split across chunks included). Off by default: encoding/json does not reject invalid UTF-8 either, it replaces it.
@@ -1411,7 +1427,7 @@ func (t *Transformer) onKeyDone() {
 		key = k
 	} else {
 		if t.keys == nil {
-			t.keys = new([keyCacheSize]string)
+			t.keys = NewKeyCache()
 		}
 		slot := &t.keys[hashKey(t.keyBuf)&(keyCacheSize-1)]
 		if *slot == string(t.keyBuf) { // the comparison does not allocate
