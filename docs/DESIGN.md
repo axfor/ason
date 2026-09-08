@@ -119,6 +119,13 @@ gives it a property worth stating plainly:
 Note that the engine enforces this rather than leaving it to the caller: `Out()` withholding output before the
 commit point is what makes the retreat safe, and a caller cannot opt out of it.
 
+A caller can, however, give the retreat up early. Often it knows before the window fills that it will never
+take it — it has seen every field its headers depend on, and would fail rather than fall back on anything
+found after that. Holding a window's worth of bytes past that moment is memory spent on an option nobody will
+exercise. `CommitNow` releases output from that moment on, exactly as if the window had just filled; the
+window then bounds only the documents where that moment never comes. On a gateway whose clients all put
+`model` first, that is the first chunk of every request.
+
 Details of an unsupported document are in `Err()`: a `Code` classifying it — grammar, truncation, root shape,
 content after the root, duplicate key, a bound exceeded, deferred items left over, a shape the protocol does
 not support, an action used wrongly — a message, and the input offset and path where it was decided. All three
