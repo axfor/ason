@@ -187,6 +187,7 @@ type Transformer struct {
 	fieldTree   *FieldTree            // recursive form; nil disables nested checking
 	valSub      *FieldTree            // subtree for the region currently being validated
 	valOver     bool                  // that region outgrew the validation buffer: accept it rather than judge it
+	valEmit     bool                  // the validated region's bytes still go to the output (Pass) or are dropped (Skip)
 }
 
 // NewTransformer builds a transformer with the given protocol.
@@ -1121,14 +1122,22 @@ func (t *Transformer) apply(f *frame, act *Action, kind ValueKind) bool {
 		}
 		if target == rtOut && isContainer && len(act.suffix) == 0 {
 			if sub := t.validationSubtree(kind); sub != nil {
-				t.beginRegion(rtValidate, act)
-				t.regCap, t.valSub, t.valOver = valCapBytes, sub, false
+				t.beginValidation(act, sub, true)
 				return true
 			}
 		}
 		t.beginRegion(target, act)
 		return true
 	case akSkip:
+		// A dropped field still has to be judged: the caller's unmarshal reads every known field, whether or
+		// not the transform keeps it, and rejects the request when one holds the wrong type. Skipping the
+		// bytes without looking is what left the streaming path more permissive than the buffered one.
+		if isContainer {
+			if sub := t.validationSubtree(kind); sub != nil {
+				t.beginValidation(act, sub, false)
+				return true
+			}
+		}
 		t.beginRegion(rtSkip, act)
 		return true
 	case akCapture:
@@ -1219,6 +1228,13 @@ func (t *Transformer) validationSubtree(kind ValueKind) *FieldTree {
 	return sub
 }
 
+// beginValidation opens a region that keeps a bounded copy for the type check. emit says whether its bytes
+// still reach the output: they do when the field was being passed through, they do not when it was dropped.
+func (t *Transformer) beginValidation(act *Action, sub *FieldTree, emit bool) {
+	t.beginRegion(rtValidate, act)
+	t.regCap, t.valSub, t.valOver, t.valEmit = valCapBytes, sub, false, emit
+}
+
 func (t *Transformer) beginRegion(target regionTarget, act *Action) {
 	t.regN = 0
 	t.regDeep = t.regDeep[:0]
@@ -1253,7 +1269,9 @@ func (t *Transformer) emitRegion(b []byte) {
 		t.w.Raw(b)
 		t.capAppend(b)
 	case rtValidate:
-		t.w.Raw(b)
+		if t.valEmit {
+			t.w.Raw(b)
+		}
 		if !t.valOver {
 			// A soft cap, unlike capAppend's: outgrowing it stops the check, it does not fail the request.
 			if len(t.capBuf)+len(b) > t.regCap {
