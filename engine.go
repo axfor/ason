@@ -195,6 +195,7 @@ type Transformer struct {
 	dead        bool
 	rootSeen    bool
 	rootDone    bool
+	lastChunk   int                   // length of the chunk the last Write scanned; drain's buffer-shrink heuristic wants it
 	fieldTypes  map[string]FieldTypes // root-level field -> the JSON types it may have; nil disables the check
 	fieldTree   *FieldTree            // recursive form; nil disables nested checking
 	valSub      *FieldTree            // subtree for the region currently being validated
@@ -309,6 +310,29 @@ func (t *Transformer) SetKeyCache(c *KeyCache) { t.keys = c }
 // SetValidateUTF8 enables UTF-8 validation of strings and keys (RFC 3629: overlong encodings, surrogates, code points above
 // U+10FFFF, stray or missing continuation bytes are rejected, sequences split across chunks included). Off by default: encoding/json does not reject invalid UTF-8 either, it replaces it.
 func (t *Transformer) SetValidateUTF8(on bool) { t.validateUTF8 = on }
+
+// CommitNow releases output from here on, before the commit window has filled.
+//
+// The window exists to keep a retreat open: until it fills, nothing has been released and a caller that meets
+// something it cannot handle can still fall back. A caller that knows it no longer needs that retreat -- it
+// has seen every field its headers depend on, say, and would fail rather than fall back on anything found
+// later -- can commit early, so an in-flight stream holds bytes only for as long as it has to. The window
+// then acts as a ceiling for documents where that moment never comes.
+//
+// Output the transformer had accumulated is released as if the window had just filled: through the sink when
+// one is set, otherwise from the next Out. A transformer that has already committed, or bailed, is unaffected.
+func (t *Transformer) CommitNow() {
+	if t.committed || t.unsupported || t.dead {
+		return
+	}
+	if !t.checkBudget(0) {
+		return
+	}
+	t.committed = true
+	if t.sink != nil {
+		t.drain(t.lastChunk)
+	}
+}
 
 // SetCommitBytes sets the commit window of this transformer (0 restores the package default CommitBytes). Must be called before the first Write.
 func (t *Transformer) SetCommitBytes(n int) { t.commit = n }
@@ -449,6 +473,7 @@ func (t *Transformer) Write(p []byte) {
 	t.chunkLen = len(p)
 	t.w.startChunk(p)
 	t.scanned += len(p)
+	t.lastChunk = len(p)
 	t.w.hint = len(p) // size for the first real write; a chunk that stays virtual never allocates at all
 	t.scan(p)
 	t.fixOffset(int64(t.scanned))

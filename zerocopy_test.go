@@ -227,3 +227,82 @@ func TestSharedKeyCacheStopsPerRequestKeyAllocs(t *testing.T) {
 		t.Fatal("共享缓存改变了输出")
 	}
 }
+
+// 提前提交只改变"何时"释放，不能改变"释放什么"：无论在哪一块上提前提交，
+// 拼起来的输出都必须与按字节数提交的输出逐字节相同，而且提交点前累积的那段只能交出一次。
+func TestCommitNowMatchesByteCountCommit(t *testing.T) {
+	body := []byte(`{"model":"m","messages":[{"role":"user","content":"` + strings.Repeat("y", 90<<10) + `"}],"max_tokens":16}` + "\n")
+	ref := func(splits []int) string {
+		tr := NewTransformer(BaseProtocol{})
+		var out []byte
+		prev := 0
+		for _, cut := range splits {
+			tr.Write(body[prev:cut])
+			out = append(out, tr.Out()...)
+			prev = cut
+		}
+		return string(append(out, tr.Finish()...))
+	}
+	early := func(splits []int, commitOn int, useSink bool) string {
+		tr := NewTransformer(BaseProtocol{})
+		var out []byte
+		if useSink {
+			tr.SetSink(func(b []byte) { out = append(out, b...) })
+		}
+		prev := 0
+		for i, cut := range splits {
+			tr.Write(body[prev:cut])
+			if i == commitOn {
+				tr.CommitNow()
+			}
+			if !useSink {
+				out = append(out, tr.Out()...)
+			}
+			prev = cut
+		}
+		if useSink {
+			tr.Finish()
+		} else {
+			out = append(out, tr.Finish()...)
+		}
+		if bad, why := tr.Unsupported(); bad {
+			t.Fatalf("splits=%v commitOn=%d sink=%v: %s", splits, commitOn, useSink, why)
+		}
+		return string(out)
+	}
+	rnd := rand.New(rand.NewSource(17))
+	for i := 0; i < 300; i++ {
+		n := 1 + rnd.Intn(8)
+		set := map[int]bool{}
+		for j := 0; j < n; j++ {
+			set[1+rnd.Intn(len(body)-1)] = true
+		}
+		var splits []int
+		for c := range set {
+			splits = append(splits, c)
+		}
+		sort.Ints(splits)
+		splits = append(splits, len(body))
+		want := ref(splits)
+		if want != string(body) {
+			t.Fatalf("参照本身不对：%d vs %d", len(want), len(body))
+		}
+		commitOn := rnd.Intn(len(splits))
+		for _, sink := range []bool{false, true} {
+			if got := early(splits, commitOn, sink); got != want {
+				t.Fatalf("splits=%v 在第 %d 块提前提交（sink=%v）：输出 %d 字节，应为 %d", splits, commitOn, sink, len(got), len(want))
+			}
+		}
+	}
+}
+
+// 已提交、已 bail 的转换器上调 CommitNow 不该有任何效果。
+func TestCommitNowIsInertAfterCommitOrBail(t *testing.T) {
+	tr := NewTransformer(BaseProtocol{})
+	tr.Write([]byte(`{"a":`))
+	tr.Write([]byte(`]`)) // 语法错误 → bail
+	tr.CommitNow()
+	if tr.Committed() {
+		t.Fatal("bail 之后不该能提交")
+	}
+}
