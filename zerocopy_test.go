@@ -145,3 +145,45 @@ func TestFixedOutBufferSequentialReuse(t *testing.T) {
 		}
 	}
 }
+
+// RootDone marks the point after which the output is only complete once Finish has run: the root's closing
+// token and any trailing whitespace are written there. A caller that switches to forwarding input verbatim
+// has to stop at that boundary, so the signal has to be exact.
+func TestRootDoneMarksTheHeldTail(t *testing.T) {
+	// Past the commit point the transformer releases as it goes, so what it still holds when the root ends
+	// is exactly the tail -- which is what a caller forwarding the rest verbatim would drop.
+	body := []byte(`{"a":"` + strings.Repeat("y", 70<<10) + `","b":[1,2,3]}` + "\n")
+	tr := NewTransformer(BaseProtocol{})
+	tr.Write(body)
+	if !tr.RootDone() {
+		t.Fatal("the whole document was written, the root must be done")
+	}
+	released := len(tr.Out())
+	if released == 0 {
+		t.Fatal("past the commit point the transformer should have released something")
+	}
+	tail := tr.Finish()
+	if bad, why := tr.Unsupported(); bad {
+		t.Fatal(why)
+	}
+	if released+len(tail) != len(body) {
+		t.Fatalf("released %d + finished %d != %d", released, len(tail), len(body))
+	}
+	if len(tail) == 0 {
+		t.Fatal("RootDone was true but Finish added nothing: the signal would be pointless")
+	}
+
+	// Before the root ends nothing is held back that the remaining input would not produce anyway.
+	for cut := 1; cut < len(body); cut++ {
+		tr := NewTransformer(BaseProtocol{})
+		tr.Write(body[:cut])
+		if tr.RootDone() {
+			continue
+		}
+		tr.Write(body[cut:])
+		if !tr.RootDone() {
+			t.Fatalf("cut=%d: the root should be done once the rest is written", cut)
+		}
+		break
+	}
+}

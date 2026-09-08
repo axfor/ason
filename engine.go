@@ -257,6 +257,13 @@ func (t *Transformer) Committed() bool { return t.committed }
 // Dead reports whether the transformer has stopped (after a bail). Protocols can return early from callbacks on it.
 func (t *Transformer) Dead() bool { return t.dead }
 
+// RootDone reports whether the scanner has read the end of the root value. From that point on the output is
+// only complete after Finish: the root's closing token is written there, after the protocol's Tail hook, along
+// with any whitespace that followed the root. A caller that stops feeding the transformer and starts forwarding
+// input verbatim must check this first -- once it is true, the bytes still held would be lost and the document
+// would go out truncated.
+func (t *Transformer) RootDone() bool { return t.rootDone }
+
 // Unsupported reports whether input the transformer cannot handle was met. When true the output is unusable.
 // The text is Err().Error(): reason + byte offset + path, ready for a log line; classify with Err().Code instead.
 func (t *Transformer) Unsupported() (bool, string) {
