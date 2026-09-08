@@ -182,6 +182,7 @@ type Transformer struct {
 	dead        bool
 	rootSeen    bool
 	rootDone    bool
+	fieldTypes  map[string]FieldTypes // root-level field -> the JSON types it may have; nil disables the check
 }
 
 // NewTransformer builds a transformer with the given protocol.
@@ -214,6 +215,47 @@ const (
 
 // SetRoot sets the allowed root shape. With an array root, depth 1 is an index and dispatches through OnElem.
 func (t *Transformer) SetRoot(k RootKind) { t.root = k }
+
+// FieldTypes is the set of JSON types a root-level field may have. Zero accepts nothing but null.
+type FieldTypes uint8
+
+const (
+	TypeString FieldTypes = 1 << iota
+	TypeNumber
+	TypeBool
+	TypeObject
+	TypeArray
+	// TypeAny accepts every type; use it for fields whose Go type is interface{} or json.RawMessage.
+	TypeAny = TypeString | TypeNumber | TypeBool | TypeObject | TypeArray
+)
+
+// typeBit maps a scanned value kind to its FieldTypes bit. Null has none: it is always accepted.
+func typeBit(k ValueKind) FieldTypes {
+	switch k {
+	case KindString:
+		return TypeString
+	case KindNumber:
+		return TypeNumber
+	case KindBool:
+		return TypeBool
+	case KindObject:
+		return TypeObject
+	case KindArray:
+		return TypeArray
+	}
+	return 0
+}
+
+// SetFieldTypes rejects a root-level field whose value has a type the caller says it cannot have, so a caller
+// that would otherwise have decoded the document into a fixed shape gets the same rejection while streaming.
+//
+// Only root-level fields are checked, and only those present in the map: anything else passes through. Null is
+// accepted for every field, and a field whose entry has no bits set accepts only null -- both match what
+// encoding/json does when unmarshalling into a struct. The check runs on the type of the value, not its
+// contents, so a fractional number still reaches an integer field.
+//
+// A mismatch bails with ErrUnsupported, which before the commit point means the caller can still fall back.
+func (t *Transformer) SetFieldTypes(m map[string]FieldTypes) { t.fieldTypes = m }
 
 // SetValidateUTF8 enables UTF-8 validation of strings and keys (RFC 3629: overlong encodings, surrogates, code points above
 // U+10FFFF, stray or missing continuation bytes are rejected, sequences split across chunks included). Off by default: encoding/json does not reject invalid UTF-8 either, it replaces it.
@@ -948,6 +990,12 @@ func (t *Transformer) valueStart(f *frame, kind ValueKind) bool {
 		if f.ph != phValue {
 			t.BailErr(ErrSyntax, "unexpected value")
 			return false
+		}
+		if t.fieldTypes != nil && len(t.path) == 1 && kind != KindNull {
+			if want, ok := t.fieldTypes[t.path[0].k]; ok && want&typeBit(kind) == 0 {
+				t.BailErr(ErrUnsupported, "field "+t.path[0].k+" cannot be "+kind.String())
+				return false
+			}
 		}
 		t.kvRaw = append(t.kvRaw, t.wsRaw...)
 		t.wsRaw = t.wsRaw[:0]
