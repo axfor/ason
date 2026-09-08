@@ -25,6 +25,7 @@ type FieldTree struct {
 	// the struct, json.Marshal back out): what the field's Go value is, and whether the tag says omitempty.
 	Kind FieldKind
 	Omit bool
+	Int  bool // a number field of an integer type: the decode rejects a fraction or an exponent
 }
 
 // FieldKind is the class of Go value behind a field, as far as the round trip cares: what a JSON null decodes
@@ -118,7 +119,7 @@ func treeOf(rt reflect.Type, depth int, onPath map[reflect.Type]bool) *FieldTree
 			return &FieldTree{Types: TypeAny, Any: true, Kind: kind}
 		}
 	}
-	t := &FieldTree{Types: jsonTypesOf(rt), Kind: kind}
+	t := &FieldTree{Types: jsonTypesOf(rt), Kind: kind, Int: isIntKind(rt)}
 	if depth <= 0 || onPath[rt] {
 		return t // deep enough, or a cycle: keep the type, say nothing about the children
 	}
@@ -203,6 +204,15 @@ func kindOf(rt reflect.Type) FieldKind {
 		return FieldStruct
 	}
 	return FieldOther
+}
+
+func isIntKind(rt reflect.Type) bool {
+	switch rt.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return true
+	}
+	return false
 }
 
 func hasOmitEmpty(tag string) bool {

@@ -49,6 +49,9 @@ func TestFieldTreeMarshalSide(t *testing.T) {
 			t.Fatalf("%s: got %+v want %+v", k, c, w)
 		}
 	}
+	if !tree.Keys["inner"].Keys["index"].Int || tree.Keys["temperature"].Int {
+		t.Fatal("integer-ness of number fields")
+	}
 	// the zero struct as json.Marshal writes it, from the tree and from the real thing
 	z, ok := tree.Keys["inner"].ZeroJSON()
 	real, _ := json.Marshal(ftInner{})
