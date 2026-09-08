@@ -226,7 +226,9 @@ func (t *Transformer) SetCommitBytes(n int) { t.commit = n }
 // exceeding it bails ("buffer budget exceeded"). 0 = unlimited. This is the total bound on memory; the individual caps remain per-item limits.
 func (t *Transformer) SetBudget(n int) { t.budget = n }
 
-// Buffered reports the number of buffered bytes currently held (for observation).
+// Buffered reports the number of buffered bytes currently held (for observation): captures, deferred items,
+// and the output that has not been released yet. It does not include the root's closing token, which is held
+// separately until Finish -- ask RootDone for that.
 func (t *Transformer) Buffered() int {
 	n := len(t.capBuf) + t.deferredBytes
 	if !t.committed {
