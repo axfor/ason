@@ -1,68 +1,142 @@
-# ason 设计说明 / Design notes
+# ason design notes
 
-## 一、要解决的问题
+## The problem
 
-JSON 改写通常是"整体解成对象 → 改 → 重新序列化"，必须全量缓冲，内存 = 并发 × 文档大小。
-ason 把改写变成对字节流的**单遍**处理：只在协议真正需要的地方缓冲（而且有上限），其余字节直通。
+Rewriting JSON usually means parsing the whole document into objects, changing it, and serialising it again.
+That requires buffering all of it, so memory is concurrency times document size. ason makes the rewrite a
+**single pass over the byte stream**: it buffers only where a protocol genuinely needs it, always under a
+declared bound, and forwards the rest untouched.
 
-三条设计约束：
+Three constraints shape everything else:
 
-1. **没动的字节一个不改**。透传的部分与输入逐字节相同（空白、顺序、转义），原位改写与 sjson 一致。
-2. **不对字段顺序做假设**。需要"后面的字段"才能决定的形状，用有上限的 `Defer` 暂存并在信息齐了之后回放；超出上限判定不支持。
-3. **判定不支持要有出路**。输出在提交点（64KB）之前不下发，调用方可以在此之前干净地换一条路（例如整体缓冲后再处理）。
+1. **Bytes the transform does not touch come out unchanged** — whitespace, key order and escapes included. An
+   in-place rewrite is byte-identical to an `sjson`-style edit.
+2. **No assumptions about field order.** A shape that cannot be decided until a later field arrives is held by
+   a bounded `Defer` and replayed once the information is there; outgrowing the bound is reported as
+   unsupported rather than silently buffered.
+3. **Being unable to handle something must leave a way out.** No output is released before the commit point,
+   so until then the caller still holds the original bytes and can take another route — typically buffering
+   the document and using the code the streaming path was meant to replace.
 
-## 二、层次
+## Layers
 
 ```
-输入字节流 ──► 扫描器（engine.go）──► 动作执行 ──► 惰性写出器（writer.go）──► 输出字节流
+input bytes ──► scanner (engine.go) ──► actions ──► lazy writer (writer.go) ──► output bytes
                      │  OnKey / OnElem / OnStart / OnValue / OnPrefix / OnLeave / Tail
                      ▼
-                  Protocol（调用方实现）
+                Protocol (implemented by the caller)
 ```
 
-- **扫描器**不建对象树，只做两件事：在协议 `Enter` 的容器（派发帧）里，每个 key / 元素触发回调；协议选定动作后，
-  从值的第一个字节到值结束是一个"区域"，字节按动作流向输出 / 丢弃 / 缓冲。区域内部只跟踪结构与字符串状态，不再派发。
-- **动作**见 README 的表。`Probe` 让协议先看到值的类型（string / object / array / null / bool / number）再决定，
-  "null 等于缺失、其它类型错误即失败"这类语义一个 `switch` 就能表达。
-- **写出器**惰性建层：`Enter` 只登记，不写开括号；第一次写子项时把它和所有未打开的祖先一起打开，逗号同时处理。
-  闭合时从未打开的层：非 `Lazy` 物化为 `[]` / `{}`，`Lazy` 什么都不写。协议可用 `PushObj / PushArr / Pop` 自建输出层，
-  配合 `Enter().Flat()` 把一个输入容器落到多层嵌套输出里。
-- **格式保真**：派发帧里 key 周围的空白、值与逗号之间的空白、闭合括号前的空白、根之后的空白都原样进入输出；
-  `Pass` 区域本来就是字节透传。
-- **子 hook**：`Enter().Via(hook)` 把子树内的全部回调交给另一个 Protocol（含它自己 Enter 的更深层与 Defer 回放），
-  容器闭合的 `OnLeave` 回到发起方——可复用的部件不需要在五个回调里各写一段转发。
+**The scanner** builds no object tree. It does two things: inside a container the protocol has entered — a
+*dispatch frame* — every key and element raises a callback; and once the protocol has chosen an action, the
+stretch from the value's first byte to its end becomes a *region*, whose bytes flow to the output, to a
+buffer, or nowhere, according to that action. Inside a region only structure and string state are tracked,
+and nothing is dispatched.
 
-## 三、语法校验
+**The actions** are listed in the README. `Probe` lets a protocol see the value's kind — string, object,
+array, null, bool, number — before deciding, so a rule like "null means absent, any other wrong type is an
+error" is one `switch`.
 
-按 JSON 文法逐字节校验，与 `encoding/json` 的拒绝面一致（模糊测试双向断言：它拒绝的我们拒绝，它接受的我们接受），
-派发帧与区域一视同仁：
+**The writer** opens levels lazily. `Enter` only records the level, without writing the opening bracket; the
+first child written opens it together with every unopened ancestor, commas included. A level that closes
+without ever being written to materialises as `[]` or `{}` — unless it was `Lazy`, in which case nothing is
+written at all. A protocol can also build output levels of its own with `PushObj` / `PushArr` / `Pop`, which
+together with `Enter().Flat()` maps one input container onto several nested output ones.
 
-- 结构：缺 key / 缺冒号 / 缺值、多余逗号、括号种类不配、根后有内容、根不是允许的形状（默认对象；`SetRoot` 可选数组或两者）。
-  区域内部同样按文法走：阶段里编码了当前容器的种类，逗号 / 冒号 / 字符串 / 标量查表即得，括号处才动一个位栈；
-- 标量：`null / true / false` 精确匹配，数字按文法（9 态 DFA，拒绝 `01`、`1.`、`1e`、`+1`、`.5`、`NaN`）；
-- 字符串与 key：转义只允许 `\" \\ \/ \b \f \n \r \t \uXXXX`，控制字符（< 0x20）拒绝；
-- 空白只认 `空格 \t \n \r`；
-- UTF-8 合法性默认不查（`encoding/json` 也不拒绝，只替换）。`SetValidateUTF8(true)` 按 RFC 3629 拒绝过长编码、代理对、
-  超出 U+10FFFF、孤立或缺失的续字节：整个序列在本块时查表一次验完，跨块的序列走逐字节状态机；
-- 派发帧里的重复 key 由 `SetDupKeys` 决定：默认照常派发，`DupKeysBail` 判定不支持，`DupKeysFirst` 只派发第一个（gjson 语义）。
+**Formatting is preserved.** Whitespace around keys in a dispatch frame, between a value and its comma,
+before a closing bracket, and after the root all reach the output as they were. A `Pass` region is byte
+pass-through by construction.
 
-校验是常数状态，不缓冲。字符串主体用 8 字节一组的 SWAR 判定引号 / 反斜杠 / 控制字符，
-长字符串与 base64 约 2.5 GB/s（M 系列笔记本单核，4KB 分块）。
+**Sub-hooks.** `Enter().Via(hook)` hands every callback inside a subtree to another Protocol — including the
+levels that hook enters itself, and its own `Defer` replays — and `OnLeave` on the container returns to the
+originator. A reusable piece therefore needs no forwarding clause in each of the five callbacks.
 
-## 四、提交点与回落
+## Grammar checking
 
-`Out()` 在扫描满 `CommitBytes`（64KB）之前返回空：输出攒着，原始字节仍由调用方持有。
-判定不支持的详情在 `Err()`：分类 `Code`（文法 / 截断 / 根形状 / 根后内容 / 重复 key / 上限 / 残留 Defer / 协议不支持 / 用错动作）、
-英文文案、判定时的输入偏移与路径，三者都与分块方式无关；`Unsupported()` 的文案就是 `Err().Error()`，调用方按 `Code` 归类、不匹配文案。
-协议自己 `Bail` 的原文原样保留（`BailCode` 可以指定分类）。
+The scanner validates JSON byte by byte with the same rejection surface as `encoding/json`. Fuzzing asserts
+that in both directions: what the standard library rejects, ason rejects; what it accepts, ason accepts.
+Dispatch frames and regions are held to the same standard.
 
-这段窗口内判定不支持（`Bail`）→ 调用方丢弃转换器、用原始字节走别的路；窗口之后判定不支持 → 已下发的字节收不回来，
-调用方只能失败或（对透传型协议）原样转发剩余字节。`Finish()` 在末块调用：执行 `Tail`、闭合根、把剩余输出一并交出。
+- **Structure**: a missing key, colon or value; a trailing comma; mismatched bracket kinds; content after the
+  root; a root that is not an allowed shape (an object by default, `SetRoot` also allows an array or either).
+  A region follows the same grammar: its phase encodes what kind of container is open, so a comma, colon,
+  string or scalar is one table lookup, and only a bracket touches the small bit stack.
+- **Scalars**: `null`, `true` and `false` matched exactly; numbers by the grammar, through a nine-state
+  machine that rejects `01`, `1.`, `1e`, `+1`, `.5` and `NaN`.
+- **Strings and keys**: the only valid escapes are `\" \\ \/ \b \f \n \r \t \uXXXX`; a control character below
+  0x20 is rejected.
+- **Whitespace** is space, tab, carriage return and newline, nothing else.
+- **UTF-8 validity is not checked by default**, because `encoding/json` does not reject invalid UTF-8 either —
+  it replaces it. `SetValidateUTF8(true)` applies RFC 3629: overlong encodings, surrogates, code points above
+  U+10FFFF, and stray or missing continuation bytes are rejected. A sequence contained in one chunk is
+  verified with a single table lookup; one split across chunks goes through a byte-at-a-time state machine.
+- **Duplicate keys** in a dispatch frame follow `SetDupKeys`: dispatched as usual by default, reported as
+  unsupported under `DupKeysBail`, or only the first one dispatched under `DupKeysFirst`, which is gjson's
+  semantics.
 
-`Out()` 交出缓冲的所有权而不拷贝：提交点前攒下的缓冲随之释放，高并发下每条流的存活内存只有几十 KB。
+Checking uses constant state and buffers nothing. String bodies are scanned eight bytes at a time with SWAR
+tests for the quote, the backslash and control characters; long strings and base64 run at about 2.5 GB/s on
+one core of an Apple-silicon laptop with 4KB chunks.
 
-## 五、验证
+## Types the caller's own decoder would have checked
 
-本仓库的测试覆盖引擎本身：动作与回放规则、格式保真（含逗号前空白与尾部换行）、每种分块尺寸下的非法字面量 / 转义 / 控制字符拒绝、
-随机文档的分块尺寸不变性、垃圾输入不 panic、深嵌套与多兆字符串、`KeyProbe` 与 sjson 逐字节一致。
-使用方应当对自己的协议做差分测试：同一输入分别经过流式协议与参照实现，逐字段比对；分块尺寸取 1 / 小素数 / 大块三档。
+A caller that would otherwise have unmarshalled the document into a struct loses that unmarshal's type
+checking, because the transform only judges the fields it actually reads. `SetFieldTree` takes the struct's
+shape — `FieldTreeOf` derives it by reflection rather than having anyone write it out, since a hand-kept table
+drifts from the struct the moment a field is added — and the scanner then rejects a value whose type the
+struct says it cannot have, at the root and inside containers alike.
+
+Two properties keep this from turning working requests into failures. Only containers the tree has an opinion
+about leave the region fast path, and only a bounded copy of each is kept; outgrowing it stops the check
+rather than failing the request, so a large field is never rejected for being large. And the mapping errs
+towards accepting throughout: a type with its own `UnmarshalJSON`, an interface, a name two fields share, all
+take everything. Rejecting a document the unmarshal would have accepted turns a passing request into a failing
+one; accepting one it would have rejected only leaves the check where it already was.
+
+## The commit point, and why it exists
+
+`Out()` returns nothing until `CommitBytes` (64KB by default, `SetCommitBytes` to change it) have been
+scanned. Output accumulates; the caller still holds the original bytes.
+
+**What the window buys is the ability to take back "I cannot handle this".** A streaming transform can
+discover mid-document that it has met a shape it does not implement, a duplicate key, a value of the wrong
+type, or a bound it would have to exceed. There are two situations to be in at that moment:
+
+- **Nothing has been released.** The caller drops the transformer and takes the original bytes elsewhere,
+  typically to the buffered implementation the streaming path was meant to replace. The result is identical
+  to not having tried.
+- **Bytes are already out.** They cannot be recalled. The caller can only fail the operation or, for a
+  pass-through protocol, forward the rest unchanged.
+
+The commit point is the boundary between the two, so the window size is a trade: a larger one sees more of the
+document while a clean retreat is still possible, a smaller one holds fewer bytes per concurrent stream. That
+gives it a property worth stating plainly:
+
+> **With the window set to X, every document of X bytes or less behaves exactly as it would have without the
+> streaming path at all** — it is fully scanned before the commit point is reached, so anything unsupported is
+> still found in time.
+
+Note that the engine enforces this rather than leaving it to the caller: `Out()` withholding output before the
+commit point is what makes the retreat safe, and a caller cannot opt out of it.
+
+Details of an unsupported document are in `Err()`: a `Code` classifying it — grammar, truncation, root shape,
+content after the root, duplicate key, a bound exceeded, deferred items left over, a shape the protocol does
+not support, an action used wrongly — a message, and the input offset and path where it was decided. All three
+are independent of how the input was chunked. `Unsupported()` returns that message; classify by `Code`, never
+by matching the text. A protocol's own `Bail` reason is kept verbatim, and `BailCode` can classify it.
+
+`Finish()` is called on the last chunk: it runs `Tail`, closes the root, and hands over whatever output is
+left. `Out()` transfers ownership of the buffer instead of copying it, so what accumulated before the commit
+point is released with it, and a stream's live memory under high concurrency is tens of kilobytes.
+
+## What is tested here, and what you should test
+
+This repository's tests cover the engine itself: the action and replay rules; formatting fidelity down to the
+whitespace before a comma and the newline after the root; rejection of invalid literals, escapes and control
+characters at every chunk size; invariance to chunk size over random documents; that malformed input never
+panics; deep nesting and multi-megabyte strings; and `KeyProbe` matching sjson byte for byte.
+
+A protocol built on ason should be tested differentially: run the same input through the streaming protocol
+and through whatever implementation it replaces, then compare field by field. Use three chunk sizes — one
+byte, a small prime, and one larger than the whole document — because the bugs that survive a single chunking
+are exactly the ones that depend on where a boundary falls.
