@@ -381,6 +381,38 @@ func (t *Transformer) Dead() bool { return t.dead }
 // would go out truncated.
 func (t *Transformer) RootDone() bool { return t.rootDone }
 
+// Aligned reports whether the output has caught up with the input: every byte consumed so far has been written
+// out, or dropped by the protocol's own decision, and none is held back for a decision still to come -- a key
+// being read, whitespace waiting for its comma, a value being captured, probed or deferred. Only then can a
+// caller stop feeding the transformer and forward the input verbatim from the next byte on; RootDone must be
+// false as well, because the root's closing token is written by Finish alone.
+//
+// It says nothing about what the protocol would still do to the bytes to come: the caller knows whether its
+// own rewrites are behind this point.
+//
+// The check is conservative. It is true only inside a value that is passing straight through with nothing
+// pending around it, which is where a chunk boundary lands in any document dominated by one large field, and
+// false at every other point -- so a caller that finds it false keeps feeding and asks again after the next
+// chunk. With a sink set the output is handed over at the end of every Write; without one the caller has to
+// take it with Out first.
+func (t *Transformer) Aligned() bool {
+	if !t.committed || t.unsupported || t.dead || t.pendSet || t.replaying > 0 || t.deferredBytes > 0 {
+		return false
+	}
+	if !t.regOpen || t.regT != rtOut || len(t.regSuf) > 0 || t.valSub != nil {
+		return false
+	}
+	if t.w.vlen > 0 || len(t.w.buf) > 0 {
+		return false // produced but not yet taken
+	}
+	for i := range t.w.frames {
+		if f := &t.w.frames[i]; !f.opened || len(f.trail) > 0 {
+			return false
+		}
+	}
+	return true
+}
+
 // Unsupported reports whether input the transformer cannot handle was met. When true the output is unusable.
 // The text is Err().Error(): reason + byte offset + path, ready for a log line; classify with Err().Code instead.
 func (t *Transformer) Unsupported() (bool, string) {
