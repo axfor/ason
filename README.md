@@ -69,19 +69,12 @@ check on pre-commit output, which runs at the end of each `Write`).
 
 Three layers, a single pass, no object tree:
 
-```
-                 ┌─ Guard (layer 3) ─────────────────────────────────┐
-                 │  commit window · budget · bail, so a caller that  │
-                 │  still holds the raw bytes can take another route │
-                 └───────────────────────────────────────────────────┘
-Write(chunk) ──► Scanner ──events──► Protocol ──actions──► Writer ──► Out() / sink
-                 (layer 1)           (layer 2)             (layer 1)
-                 grammar,            your callbacks:       lazy levels,
-                 frames + regions    one answer per event  byte fidelity
-```
+![ason architecture: the scanner reads the input and asks the protocol for an action on every event, bytes travel straight from the scanner to the lazy writer, and the guard holds the output back until the commit point](docs/architecture.svg)
 
-The scanner turns bytes into events, the protocol answers every event with an action, the writer builds the
-output lazily, and the guard decides how long a decision can still be taken back.
+The scanner turns bytes into events and the protocol answers each one with an action — but the bytes never
+travel through the protocol. They go straight from the scanner to the writer, which builds the output lazily;
+the protocol writes only what it replaces or adds. Around all of it, the guard decides how long a decision can
+still be taken back.
 
 ### Dispatch frames and regions
 

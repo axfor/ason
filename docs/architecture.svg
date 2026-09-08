@@ -1,0 +1,113 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 400" width="860" height="400"
+     role="img" aria-labelledby="title desc">
+  <title id="title">ason architecture</title>
+  <desc id="desc">Three layers in one pass. The scanner (layer 1) reads the input chunk by chunk and asks
+  the protocol (layer 2) for an action on every event; the bytes themselves never travel through the
+  protocol — they go straight from the scanner to the writer (layer 1), which builds the output lazily and
+  hands it to Out() or a sink. The protocol writes only what it replaces or adds. The guard (layer 3) —
+  commit window, budget, bail — underpins the whole pipeline and holds output back until the commit
+  point.</desc>
+
+  <style>
+    /* Concrete colours per class, not CSS variables: renderers outside a browser
+       (librsvg, resvg) do not resolve var() and would paint the whole figure flat. */
+    .bg   { fill:#ffffff }
+    .box  { fill:#f6f8fa; stroke:#d0d7de; stroke-width:1 }
+    .band { fill:#fff8e6; stroke:#9a6700; stroke-width:1; stroke-dasharray:5 4 }
+    text  { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+            fill:#1f2328 }
+    .h    { font-size:15px; font-weight:600 }
+    .tag  { font-size:10px; fill:#59636e; letter-spacing:.4px }
+    .s    { font-size:11px; fill:#59636e }
+    .s.ac { fill:#8250df }
+    .m    { font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:10.5px;
+            fill:#59636e }
+    .lbl  { font-size:11.5px; font-weight:600 }
+    .ev   { fill:#0969da }  .evs { stroke:#0969da }
+    .ac   { fill:#8250df }  .acs { stroke:#8250df }
+    .by   { fill:#1a7f37 }  .bys { stroke:#1a7f37 }
+    .gd   { fill:#9a6700 }
+    .ink  { fill:#1f2328 }  .inks{ stroke:#1f2328 }
+    .flow { fill:none; stroke-width:1.6 }
+    .tick { fill:none; stroke:#9a6700; stroke-width:1; stroke-dasharray:2 3; opacity:.8 }
+
+    @media (prefers-color-scheme: dark) {
+      .bg   { fill:#0d1117 }
+      .box  { fill:#161b22; stroke:#30363d }
+      .band { fill:#1c1710; stroke:#d29922 }
+      text  { fill:#e6edf3 }
+      .tag, .s, .m { fill:#9198a1 }
+      .s.ac { fill:#ab7df8 }
+      .ev   { fill:#4493f8 }  .evs { stroke:#4493f8 }
+      .ac   { fill:#ab7df8 }  .acs { stroke:#ab7df8 }
+      .by   { fill:#3fb950 }  .bys { stroke:#3fb950 }
+      .gd   { fill:#d29922 }
+      .ink  { fill:#e6edf3 }  .inks{ stroke:#e6edf3 }
+      .tick { stroke:#d29922 }
+    }
+  </style>
+
+  <defs>
+    <marker id="aEv" viewBox="0 0 10 8" refX="9" refY="4" markerWidth="7" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 4 L0 8 z" class="ev"/></marker>
+    <marker id="aAc" viewBox="0 0 10 8" refX="9" refY="4" markerWidth="7" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 4 L0 8 z" class="ac"/></marker>
+    <marker id="aBy" viewBox="0 0 10 8" refX="9" refY="4" markerWidth="7" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 4 L0 8 z" class="by"/></marker>
+    <marker id="aInk" viewBox="0 0 10 8" refX="9" refY="4" markerWidth="7" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 4 L0 8 z" class="ink"/></marker>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="860" height="400"/>
+
+  <!-- layer 2: protocol -->
+  <rect class="box" x="96" y="28" width="236" height="100" rx="9"/>
+  <text class="h"   x="116" y="53">Protocol</text>
+  <text class="tag" x="316" y="52" text-anchor="end">layer 2</text>
+  <text class="s"   x="116" y="72">hand-written, one action per event</text>
+  <text class="m"   x="116" y="93">OnKey OnElem OnStart OnValue</text>
+  <text class="m"   x="116" y="109">OnPrefix OnLeave Tail</text>
+
+  <!-- layer 1: scanner -->
+  <rect class="box" x="96" y="200" width="236" height="100" rx="9"/>
+  <text class="h"   x="116" y="225">Scanner</text>
+  <text class="tag" x="316" y="224" text-anchor="end">layer 1</text>
+  <text class="s"   x="116" y="244">byte grammar, constant state</text>
+  <text class="s"   x="116" y="262">no object tree, one pass</text>
+  <text class="m"   x="116" y="283">dispatch frames · regions</text>
+
+  <!-- layer 1: writer -->
+  <rect class="box" x="524" y="200" width="236" height="100" rx="9"/>
+  <text class="h"   x="544" y="225">Writer</text>
+  <text class="tag" x="744" y="224" text-anchor="end">layer 1</text>
+  <text class="s"   x="544" y="244">lazy levels, separators</text>
+  <text class="s"   x="544" y="262">byte-for-byte fidelity</text>
+  <text class="m"   x="544" y="283">PushObj · PushArr · Pop</text>
+
+  <!-- events / actions between scanner and protocol -->
+  <path class="flow evs" d="M160 194 L160 136" marker-end="url(#aEv)"/>
+  <path class="flow acs" d="M250 136 L250 194" marker-end="url(#aAc)"/>
+  <text class="lbl ev" x="170" y="152">events</text>
+  <text class="lbl ac" x="260" y="152">actions</text>
+  <text class="s ac"   x="312" y="170">Pass · Skip · Enter · Probe · Observe</text>
+  <text class="s ac"   x="312" y="187">Capture · Defer · Prefix · Bail</text>
+
+  <!-- protocol writes directly -->
+  <path class="flow inks" d="M338 78 L642 78 L642 194" marker-end="url(#aInk)"/>
+  <text class="s" x="490" y="68" text-anchor="middle">writes replacements · levels it builds · Tail</text>
+
+  <!-- byte path -->
+  <path class="flow inks" d="M26 250 L88 250" marker-end="url(#aInk)"/>
+  <text class="lbl" x="57" y="238" text-anchor="middle">Write(chunk)</text>
+
+  <path class="flow bys" d="M338 250 L516 250" marker-end="url(#aBy)"/>
+  <text class="lbl by" x="427" y="238" text-anchor="middle">bytes</text>
+  <text class="s"      x="427" y="272" text-anchor="middle">pass-through ranges · region output</text>
+
+  <path class="flow inks" d="M766 250 L828 250" marker-end="url(#aInk)"/>
+  <text class="lbl" x="797" y="238" text-anchor="middle">Out() / sink</text>
+
+  <!-- layer 3: guard -->
+  <path class="tick" d="M214 306 L214 330"/>
+  <path class="tick" d="M642 306 L642 330"/>
+  <rect class="band" x="96" y="330" width="664" height="62" rx="9"/>
+  <text class="lbl gd" x="428" y="352" text-anchor="middle">Guard — layer 3</text>
+  <text class="s"      x="428" y="370" text-anchor="middle">commit window (64KB) · budget · bail</text>
+  <text class="s"      x="428" y="386" text-anchor="middle">no output is released before the commit point: until then, a bail costs the caller nothing</text>
+</svg>
