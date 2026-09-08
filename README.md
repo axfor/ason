@@ -16,6 +16,10 @@ go get github.com/axfor/ason
 
 ## How it works
 
+One document, four chunks: the engine scans, your hooks decide, the engine moves the bytes.
+
+![How the engine and a protocol's hooks transform a document as it streams: the document arrives in four chunks, and inside one pass of the ason engine every field reaches the protocol as a hook call — OnKey answers Pass for model, Skip for debug, Capture for owner, whose value comes back through OnValue where the protocol writes "team":42, and Pass for the 512KB text value. The engine moves the bytes itself according to those answers. Numbered marks show how much output exists once each chunk has been read — chunk 2 carried only the skipped field, so the output did not grow — and memory stays flat but for the nine bytes held while owner is captured.](docs/streaming.svg)
+
 A **protocol** is a set of callbacks. The scanner walks the byte stream and, for every key or array element
 of a container the protocol has *entered*, asks the protocol for an **action**:
 
@@ -260,6 +264,9 @@ ason 是 Go 的通用流式 JSON 转换框架：文档边到达边改写，按�
 
 协议就是一组回调：扫描器对每个 key / 数组元素向协议要一个动作（Pass / Skip / Enter / Probe / Observe / Capture / Defer / Prefix / Bail），
 写出器惰性建层，输出在 64KB 提交点之后才下发——调用方在此之前保留原始字节，协议判定不支持时可以换一条路。
+开头那张示范图就是这个过程：一份文档分 4 块到达，引擎每扫到一个字段就回调你的 hook（`OnKey` 要动作、
+`Capture` 的值再经 `OnValue` 交回协议改写），拿到答案后由引擎自己搬字节——直通的原样出去、被丢的不留一点痕迹，
+512KB 的值全程不进内存；输出下方的编号标出"读完第 N 块时输出长到哪"——第 2 块只装了被丢弃的字段，输出一个字节都没长。
 扫描器按 `encoding/json` 的拒绝面逐字节校验，常数状态。
 
 ### 架构原理

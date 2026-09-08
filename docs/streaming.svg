@@ -1,0 +1,169 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 482" width="880" height="482" role="img" aria-labelledby="t d">
+  <title id="t">How the engine and a protocol's hooks transform a document as it streams</title>
+  <desc id="d">A document arrives in four chunks. Inside one pass of the ason engine, every field reaches the protocol as a hook call: OnKey answers Pass for model, Skip for debug, Capture for owner — whose value then comes back through OnValue, where the protocol writes "team":42 — and Pass for the 512KB text value. The engine moves the bytes itself according to those answers. Numbered marks show how much output exists once each chunk has been read: chunk 2 carried only the skipped field, so the output did not grow. Memory stays flat but for the nine bytes held while owner is captured.</desc>
+  <style>
+    .bg   { fill:#ffffff }
+    .strip{ fill:#f6f8fa; stroke:#d0d7de; stroke-width:1 }
+    .eng  { fill:none; stroke:#8c959f; stroke-width:1.2; stroke-dasharray:6 4 }
+    .band { fill:#ddf4ff; stroke:#54aeff; stroke-width:1 }
+    .bandfill { fill:#ddf4ff }
+    .card { fill:#ffffff }
+    text  { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+            fill:#1f2328 }
+    .code { font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:12px; fill:#1f2328 }
+    .cd   { font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:10.5px }
+    .punc { font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:12px; fill:#59636e }
+    .punc2{ font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:10.5px; fill:#59636e }
+    .side { font-size:10.5px; fill:#59636e; font-weight:600; letter-spacing:.3px }
+    .s    { font-size:10.5px; fill:#59636e }
+    .note { font-size:11px; fill:#59636e }
+    .pill { font-size:11px; font-weight:600 }
+    .ttl  { font-size:10.5px; font-weight:700; letter-spacing:.4px }
+    .cpass{ fill:#dafbe1; stroke:#1a7f37 }
+    .ccap { fill:#f3ebff; stroke:#8250df }
+    .cskip{ fill:#eef1f4; stroke:#8c959f; stroke-dasharray:4 3 }
+    .bpass{ stroke:#1a7f37 } .bcap { stroke:#8250df } .bskip{ stroke:#8c959f; stroke-dasharray:4 3 }
+    .kpass{ fill:#1a7f37 } .kcap { fill:#8250df } .kskip{ fill:#6e7781 }
+    .hook { fill:#0969da } .khook{ fill:#0969da } .lhook{ stroke:#0969da }
+    .lpass{ stroke:#1a7f37 } .lcap { stroke:#8250df } .lskip{ stroke:#8c959f }
+    .keng { fill:#6e7781 }
+    .flow { fill:none; stroke-width:1.5 }
+    .chunk{ stroke:#9a6700; stroke-width:1; stroke-dasharray:3 3; fill:none }
+    .cmark{ fill:#9a6700; font-size:10px }
+    .cnum { fill:#9a6700 }
+    .cnumt{ fill:#ffffff; font-size:9.5px; font-weight:700 }
+    .mem  { fill:#8250df; opacity:.16 }
+    .memline { fill:none; stroke:#8250df; stroke-width:1.5 }
+    .axis { stroke:#d0d7de; stroke-width:1 }
+
+    @media (prefers-color-scheme: dark) {
+      .bg   { fill:#0d1117 }
+      .strip{ fill:#161b22; stroke:#30363d }
+      .eng  { stroke:#6e7681 }
+      .band { fill:#0c2135; stroke:#1f6feb }
+      .bandfill { fill:#0c2135 }
+      .card { fill:#0d1117 }
+      text  { fill:#e6edf3 }
+      .code { fill:#e6edf3 }
+      .punc, .punc2, .side, .s, .note { fill:#9198a1 }
+      .cpass{ fill:#0f2a1a; stroke:#3fb950 }
+      .ccap { fill:#221a33; stroke:#ab7df8 }
+      .cskip{ fill:#171c22; stroke:#6e7681 }
+      .bpass{ stroke:#3fb950 } .bcap { stroke:#ab7df8 } .bskip{ stroke:#6e7681 }
+      .kpass{ fill:#3fb950 } .kcap { fill:#ab7df8 } .kskip{ fill:#8b949e }
+      .hook, .khook { fill:#4493f8 } .lhook{ stroke:#4493f8 }
+      .keng { fill:#8b949e }
+      .lpass{ stroke:#3fb950 } .lcap { stroke:#ab7df8 } .lskip{ stroke:#6e7681 }
+      .chunk{ stroke:#d29922 } .cmark{ fill:#d29922 } .cnum { fill:#d29922 }
+      .cnumt{ fill:#0d1117 }
+      .mem  { fill:#ab7df8; opacity:.22 } .memline { stroke:#ab7df8 }
+      .axis { stroke:#30363d }
+    }
+  </style>
+  <defs>
+    <marker id="mp" viewBox="0 0 10 8" refX="9" refY="4" markerWidth="7" markerHeight="6" orient="auto"><path d="M0 0 L10 4 L0 8 z" class="kpass"/></marker>
+    <marker id="mc" viewBox="0 0 10 8" refX="9" refY="4" markerWidth="7" markerHeight="6" orient="auto"><path d="M0 0 L10 4 L0 8 z" class="kcap"/></marker>
+    <marker id="mh" viewBox="0 0 10 8" refX="9" refY="4" markerWidth="7" markerHeight="6" orient="auto"><path d="M0 0 L10 4 L0 8 z" class="khook"/></marker>
+  </defs>
+  <rect class="bg" x="0" y="0" width="880" height="482"/>
+  <text class="side" x="92" y="36" text-anchor="end">chunks</text>
+  <text class="side" x="92" y="69" text-anchor="end">input</text>
+  <text class="side" x="92" y="170" text-anchor="end">hooks</text>
+  <text class="side" x="92" y="265" text-anchor="end">output</text>
+  <text class="side" x="92" y="344" text-anchor="end">held</text>
+  <rect class="strip" x="104" y="46" width="644.2" height="38" rx="8"/>
+  <text class="punc" x="112.0" y="70.0" textLength="7.4" lengthAdjust="spacingAndGlyphs">{</text>
+  <rect class="cpass" x="121.4" y="52" width="136.4" height="26" rx="6"/>
+  <text class="code" x="130.4" y="70.0" textLength="118.4" lengthAdjust="spacingAndGlyphs">"model":"gpt-4o"</text>
+  <text class="punc" x="259.8" y="70.0" textLength="7.4" lengthAdjust="spacingAndGlyphs">,</text>
+  <rect class="cskip" x="269.2" y="52" width="158.6" height="26" rx="6"/>
+  <text class="code" x="278.2" y="70.0" textLength="140.6" lengthAdjust="spacingAndGlyphs">"debug":{"trace":1}</text>
+  <text class="punc" x="429.8" y="70.0" textLength="7.4" lengthAdjust="spacingAndGlyphs">,</text>
+  <rect class="ccap" x="439.2" y="52" width="143.8" height="26" rx="6"/>
+  <text class="code" x="448.2" y="70.0" textLength="125.8" lengthAdjust="spacingAndGlyphs">"owner":"team/42"</text>
+  <text class="punc" x="585.0" y="70.0" textLength="7.4" lengthAdjust="spacingAndGlyphs">,</text>
+  <rect class="cpass" x="594.4" y="52" width="136.4" height="26" rx="6"/>
+  <text class="code" x="603.4" y="70.0" textLength="118.4" lengthAdjust="spacingAndGlyphs">"text":"…512KB…"</text>
+  <text class="punc" x="733.8" y="70.0" textLength="7.4" lengthAdjust="spacingAndGlyphs">}</text>
+  <path class="chunk" d="M211.8 42 L211.8 86"/>
+  <path class="chunk" d="M352.2 42 L352.2 86"/>
+  <path class="chunk" d="M692.2 42 L692.2 86"/>
+  <text class="cmark" x="158.9" y="36" text-anchor="middle">chunk 1</text>
+  <text class="cmark" x="282.0" y="36" text-anchor="middle">chunk 2</text>
+  <text class="cmark" x="522.2" y="36" text-anchor="middle">chunk 3</text>
+  <text class="cmark" x="720.2" y="36" text-anchor="middle">chunk 4</text>
+  <rect class="eng" x="104" y="100" width="764" height="134" rx="10"/>
+  <rect class="band" x="116" y="126" width="740" height="84" rx="8"/>
+  <path class="flow lhook" d="M189.6 86 L189.6 147" marker-end="url(#mh)"/>
+  <rect class="card bpass" x="141.8" y="152" width="95.6" height="35" rx="6"/>
+  <text class="cd hook" x="151.8" y="167.0" textLength="31.5" lengthAdjust="spacingAndGlyphs">OnKey</text>
+  <text class="cd punc2" x="189.6" y="167.0" textLength="6.3" lengthAdjust="spacingAndGlyphs">→</text>
+  <text class="cd kpass" x="202.2" y="167.0" textLength="25.2" lengthAdjust="spacingAndGlyphs">Pass</text>
+  <path class="flow lpass" d="M189.6 187 L189.6 218 L189.6 238" marker-end="url(#mp)"/>
+  <path class="flow lhook" d="M348.5 86 L348.5 147" marker-end="url(#mh)"/>
+  <rect class="card bskip" x="300.7" y="152" width="95.6" height="35" rx="6"/>
+  <text class="cd hook" x="310.7" y="167.0" textLength="31.5" lengthAdjust="spacingAndGlyphs">OnKey</text>
+  <text class="cd punc2" x="348.5" y="167.0" textLength="6.3" lengthAdjust="spacingAndGlyphs">→</text>
+  <text class="cd kskip" x="361.1" y="167.0" textLength="25.2" lengthAdjust="spacingAndGlyphs">Skip</text>
+  <path class="flow lskip" style="stroke-dasharray:4 3" d="M348.5 187 L348.5 216"/>
+  <path class="flow lskip" d="M342.0 217.5 L355.0 230.5 M355.0 217.5 L342.0 230.5"/>
+  <text class="s" x="334.5" y="228.0" text-anchor="end">nothing written</text>
+  <path class="flow lhook" d="M511.1 86 L511.1 147" marker-end="url(#mh)"/>
+  <rect class="card bcap" x="419.2" y="152" width="183.8" height="50" rx="6"/>
+  <text class="cd hook" x="451.2" y="167.0" textLength="31.5" lengthAdjust="spacingAndGlyphs">OnKey</text>
+  <text class="cd punc2" x="489.0" y="167.0" textLength="6.3" lengthAdjust="spacingAndGlyphs">→</text>
+  <text class="cd kcap" x="501.6" y="167.0" textLength="69.3" lengthAdjust="spacingAndGlyphs">Capture(64)</text>
+  <text class="cd hook" x="429.2" y="182.0" textLength="44.1" lengthAdjust="spacingAndGlyphs">OnValue</text>
+  <text class="cd punc2" x="479.6" y="182.0" textLength="6.3" lengthAdjust="spacingAndGlyphs">→</text>
+  <text class="cd kcap" x="492.2" y="182.0" textLength="100.8" lengthAdjust="spacingAndGlyphs">writes "team":42</text>
+  <path class="flow lcap" d="M511.1 202 L511.1 218 L311.5 238" marker-end="url(#mc)"/>
+  <path class="flow lhook" d="M662.6 86 L662.6 147" marker-end="url(#mh)"/>
+  <rect class="card bpass" x="614.8" y="152" width="95.6" height="35" rx="6"/>
+  <text class="cd hook" x="624.8" y="167.0" textLength="31.5" lengthAdjust="spacingAndGlyphs">OnKey</text>
+  <text class="cd punc2" x="662.6" y="167.0" textLength="6.3" lengthAdjust="spacingAndGlyphs">→</text>
+  <text class="cd kpass" x="675.2" y="167.0" textLength="25.2" lengthAdjust="spacingAndGlyphs">Pass</text>
+  <path class="flow lpass" d="M662.6 187 L662.6 218 L433.4 238" marker-end="url(#mp)"/>
+  <rect class="strip" x="104" y="242" width="415.0" height="38" rx="8"/>
+  <text class="punc" x="112.0" y="266.0" textLength="7.4" lengthAdjust="spacingAndGlyphs">{</text>
+  <rect class="cpass" x="121.4" y="248" width="136.4" height="26" rx="6"/>
+  <text class="code" x="130.4" y="266.0" textLength="118.4" lengthAdjust="spacingAndGlyphs">"model":"gpt-4o"</text>
+  <text class="punc" x="259.8" y="266.0" textLength="7.4" lengthAdjust="spacingAndGlyphs">,</text>
+  <rect class="ccap" x="269.2" y="248" width="84.6" height="26" rx="6"/>
+  <text class="code" x="278.2" y="266.0" textLength="66.6" lengthAdjust="spacingAndGlyphs">"team":42</text>
+  <text class="punc" x="355.8" y="266.0" textLength="7.4" lengthAdjust="spacingAndGlyphs">,</text>
+  <rect class="cpass" x="365.2" y="248" width="136.4" height="26" rx="6"/>
+  <text class="code" x="374.2" y="266.0" textLength="118.4" lengthAdjust="spacingAndGlyphs">"text":"…512KB…"</text>
+  <text class="punc" x="504.6" y="266.0" textLength="7.4" lengthAdjust="spacingAndGlyphs">}</text>
+  <path class="chunk" d="M211.8 240 L211.8 288"/>
+  <circle class="cnum" cx="211.8" cy="296" r="8"/>
+  <text class="cnumt" x="211.8" y="299.5" text-anchor="middle">1</text>
+  <path class="chunk" d="M257.8 240 L257.8 288"/>
+  <circle class="cnum" cx="257.8" cy="296" r="8"/>
+  <text class="cnumt" x="257.8" y="299.5" text-anchor="middle">2</text>
+  <path class="chunk" d="M463.0 240 L463.0 288"/>
+  <circle class="cnum" cx="463.0" cy="296" r="8"/>
+  <text class="cnumt" x="463.0" y="299.5" text-anchor="middle">3</text>
+  <path class="axis" d="M104 340 L868 340"/>
+  <path class="mem" d="M104 340 L439.2 340 L439.2 325 L583.0 325 L583.0 340 L868 340 Z"/>
+  <path class="memline" d="M104 340 L439.2 340 L439.2 325 L583.0 325 L583.0 340 L868 340"/>
+  <text class="s" x="511.1" y="319" text-anchor="middle">9 bytes, while owner is captured</text>
+  <text class="s" x="868" y="355" text-anchor="end">flat, whatever the document weighs — the 512KB value is never held</text>
+  <rect class="cpass" x="104" y="381" width="11" height="11" rx="3"/>
+  <text class="pill kpass" x="122" y="390">Pass</text>
+  <text class="s" x="214" y="390">forwarded byte for byte — order, whitespace and escapes included, never buffered</text>
+  <rect class="cskip" x="104" y="398" width="11" height="11" rx="3"/>
+  <text class="pill kskip" x="122" y="407">Skip</text>
+  <text class="s" x="214" y="407">dropped as it is read; it leaves no trace in the output</text>
+  <rect class="ccap" x="104" y="415" width="11" height="11" rx="3"/>
+  <text class="pill kcap" x="122" y="424">Capture(64)</text>
+  <text class="s" x="214" y="424">held up to its cap and handed to OnValue; the protocol writes the replacement</text>
+  <circle class="cnum" cx="109.5" cy="439.5" r="7"/>
+  <text class="cnumt" x="109.5" y="443" text-anchor="middle">n</text>
+  <text class="note" x="122" y="443">how much output exists once that chunk has been read — chunk 2 carried only the skipped field, so it did not grow.</text>
+  <text class="note" x="104" y="462">A chunk ends anywhere — mid-key, mid-string, mid-escape — and the scanner carries its state across.</text>
+  <text class="s" x="854" y="228" text-anchor="end">the answer comes back; the engine moves the bytes</text>
+  <rect class="bg" x="618.0" y="92" width="236.0" height="15"/>
+  <text class="ttl keng" x="848" y="103" text-anchor="end">ason engine — one pass: scanner + writer</text>
+  <rect class="bandfill" x="120" y="130" width="249.2" height="16"/>
+  <text class="ttl hook" x="128" y="142">your Protocol — the hooks the engine calls</text>
+</svg>
