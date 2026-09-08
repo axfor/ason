@@ -109,7 +109,7 @@ func TestErrNilWhenOK(t *testing.T) {
 // The first reason is kept; later Bails do not overwrite it.
 func TestFirstErrorWins(t *testing.T) {
 	tr := base()
-	tr.BailErr(ErrLimit, "first")
+	tr.BailCode(ErrLimit, "first")
 	tr.Bail("second")
 	if e := tr.Err(); e.Code != ErrLimit || e.Msg != "first" {
 		t.Fatalf("got %+v", e)

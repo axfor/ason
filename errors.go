@@ -51,8 +51,8 @@ func BailCode(code Code, reason string) Action {
 	return Action{kind: akBail, level: -1, reason: reason, code: code}
 }
 
-// BailErr is called by protocols or the framework: bail and stop scanning. The first reason is kept, later calls are ignored.
-func (t *Transformer) BailErr(code Code, reason string) {
+// BailCode is called by protocols or the framework: bail and stop scanning. The first reason is kept, later calls are ignored.
+func (t *Transformer) BailCode(code Code, reason string) {
 	if !t.unsupported {
 		t.unsupported = true
 		t.err = &Error{Code: code, Msg: reason, Offset: -1, Path: t.PathString()}
@@ -61,7 +61,7 @@ func (t *Transformer) BailErr(code Code, reason string) {
 }
 
 // Bail is called by protocols: bail (ErrUnsupported) and stop scanning.
-func (t *Transformer) Bail(reason string) { t.BailErr(ErrUnsupported, reason) }
+func (t *Transformer) Bail(reason string) { t.BailCode(ErrUnsupported, reason) }
 
 // fixOffset pins an error that has no offset yet to off.
 func (t *Transformer) fixOffset(off int64) {

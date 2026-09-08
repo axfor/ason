@@ -271,7 +271,20 @@ func (t *Transformer) SetFieldTypes(m map[string]FieldTypes) { t.fieldTypes = m 
 // nothing about keep the region fast path untouched.
 //
 // A mismatch bails with ErrUnsupported, which before the commit point still leaves the caller its fallback.
-func (t *Transformer) SetFieldTree(tr *FieldTree) { t.fieldTree = tr }
+func (t *Transformer) SetFieldTree(tr *FieldTree) {
+	t.fieldTree = tr
+	if tr != nil && tr.Keys != nil && t.fieldTypes == nil {
+		// The tree already carries the root fields' own types, so a caller that has a tree should not have to
+		// hand over the flat table as well.
+		m := make(map[string]FieldTypes, len(tr.Keys))
+		for k, sub := range tr.Keys {
+			if sub != nil {
+				m[k] = sub.Types
+			}
+		}
+		t.fieldTypes = m
+	}
+}
 
 // valCapBytes bounds what one validated container may hold. The fields worth checking this way are small by
 // nature -- metadata, logit_bias, response_format and the like -- so the bound is generous and rarely reached.
@@ -309,7 +322,7 @@ func (t *Transformer) commitBytes() int {
 // checkBudget is called wherever a buffer grows.
 func (t *Transformer) checkBudget(extra int) bool {
 	if t.budget > 0 && t.Buffered()+extra > t.budget {
-		t.BailErr(ErrLimit, "buffer budget exceeded")
+		t.BailCode(ErrLimit, "buffer budget exceeded")
 		return false
 	}
 	return true
@@ -385,14 +398,6 @@ func (t *Transformer) drain(chunk int) {
 	}
 }
 
-// Unchanged reports whether this Write produced exactly the bytes it was handed: past the commit point, with
-// nothing skipped, rewritten, generated, reordered or held back. The caller can then forward its own input and
-// skip taking the output at all — in a proxy that means not replacing the host buffer, so a pass-through chunk
-// costs no copy and no allocation. It is a per-Write property: an earlier chunk may well have been rewritten.
-func (t *Transformer) Unchanged() bool {
-	return t.committed && !t.unsupported && !t.w.touched && t.w.base == 0 && t.w.passed == t.chunkLen
-}
-
 // Out takes the releasable bytes. Returns nothing before the commit point, after a bail, or when a sink is set.
 func (t *Transformer) Out() []byte {
 	if t.unsupported || !t.committed || t.sink != nil {
@@ -456,7 +461,7 @@ func (t *Transformer) Finish() []byte {
 		t.fixOffset(int64(t.scanned))
 	}
 	if !t.rootDone {
-		t.BailErr(ErrIncomplete, "unexpected end of input")
+		t.BailCode(ErrIncomplete, "unexpected end of input")
 		t.fixOffset(int64(t.scanned))
 		return nil
 	}
@@ -618,7 +623,7 @@ scan:
 				t.esc = false
 				switch escapeClass(c) {
 				case 0:
-					t.BailErr(ErrSyntax, "invalid escape in string")
+					t.BailCode(ErrSyntax, "invalid escape in string")
 					continue
 				case 2:
 					t.hexN = 4
@@ -628,7 +633,7 @@ scan:
 			}
 			if t.hexN > 0 {
 				if !isHexByte(c) {
-					t.BailErr(ErrSyntax, "invalid \\u escape")
+					t.BailCode(ErrSyntax, "invalid \\u escape")
 					continue
 				}
 				t.hexN--
@@ -651,7 +656,7 @@ scan:
 			}
 			i = j
 			if p[i] < 0x20 {
-				t.BailErr(ErrSyntax, "control character in string")
+				t.BailCode(ErrSyntax, "control character in string")
 				continue
 			}
 			if p[i] == '\\' {
@@ -676,7 +681,7 @@ scan:
 				t.esc = false
 				switch escapeClass(c) {
 				case 0:
-					t.BailErr(ErrSyntax, "invalid escape in key")
+					t.BailCode(ErrSyntax, "invalid escape in key")
 					continue
 				case 2:
 					t.hexN = 4
@@ -688,7 +693,7 @@ scan:
 			}
 			if t.hexN > 0 {
 				if !isHexByte(c) {
-					t.BailErr(ErrSyntax, "invalid \\u escape")
+					t.BailCode(ErrSyntax, "invalid \\u escape")
 					continue
 				}
 				t.hexN--
@@ -716,7 +721,7 @@ scan:
 				continue
 			}
 			if c < 0x20 {
-				t.BailErr(ErrSyntax, "control character in key")
+				t.BailCode(ErrSyntax, "control character in key")
 				continue
 			}
 			if c == '\\' {
@@ -738,7 +743,7 @@ scan:
 					for i < len(p) && isScalarByte(p[i]) {
 						t.lit.num = numStep(t.lit.num, p[i])
 						if t.lit.num == nsBad {
-							t.BailErr(ErrSyntax, "invalid literal")
+							t.BailCode(ErrSyntax, "invalid literal")
 							continue scan
 						}
 						i++
@@ -747,7 +752,7 @@ scan:
 				}
 				for i < len(p) && isScalarByte(p[i]) {
 					if !t.lit.step(p[i]) {
-						t.BailErr(ErrSyntax, "invalid literal")
+						t.BailCode(ErrSyntax, "invalid literal")
 						continue scan
 					}
 					i++
@@ -755,7 +760,7 @@ scan:
 				continue
 			}
 			if !t.lit.done() {
-				t.BailErr(ErrSyntax, "incomplete literal")
+				t.BailCode(ErrSyntax, "incomplete literal")
 				continue
 			}
 			t.st = sIdle
@@ -791,7 +796,7 @@ scan:
 					switch c {
 					case '"':
 						if ph = regAfterStr[ph]; ph == rErr {
-							t.BailErr(ErrSyntax, "unexpected string")
+							t.BailCode(ErrSyntax, "unexpected string")
 							continue scan
 						}
 						t.regPh = ph
@@ -801,7 +806,7 @@ scan:
 						continue scan
 					case '{', '[':
 						if regAfterVal[ph] == rErr {
-							t.BailErr(ErrSyntax, "unexpected object or array")
+							t.BailCode(ErrSyntax, "unexpected object or array")
 							continue scan
 						}
 						t.depth++
@@ -810,11 +815,11 @@ scan:
 					case '}', ']':
 						k := regClose[ph]
 						if k == 0 {
-							t.BailErr(ErrSyntax, "missing value or trailing comma before closing bracket")
+							t.BailCode(ErrSyntax, "missing value or trailing comma before closing bracket")
 							continue scan
 						}
 						if (c == ']') != (k == 2) {
-							t.BailErr(ErrSyntax, "mismatched closing bracket")
+							t.BailCode(ErrSyntax, "mismatched closing bracket")
 							continue scan
 						}
 						ph = t.regPop()
@@ -829,22 +834,22 @@ scan:
 						}
 					case ',':
 						if ph = regAfterComma[ph]; ph == rErr {
-							t.BailErr(ErrSyntax, "unexpected comma")
+							t.BailCode(ErrSyntax, "unexpected comma")
 							continue scan
 						}
 					case ':':
 						if ph != rColon {
-							t.BailErr(ErrSyntax, "unexpected colon")
+							t.BailCode(ErrSyntax, "unexpected colon")
 							continue scan
 						}
 						ph = rOValue
 					default:
 						if ph = regAfterVal[ph]; ph == rErr {
-							t.BailErr(ErrSyntax, "unexpected literal")
+							t.BailCode(ErrSyntax, "unexpected literal")
 							continue scan
 						}
 						if !t.lit.start(c) {
-							t.BailErr(ErrSyntax, "invalid character")
+							t.BailCode(ErrSyntax, "invalid character")
 							continue scan
 						}
 						t.regPh = ph
@@ -858,7 +863,7 @@ scan:
 				continue
 			}
 			if t.rootDone {
-				t.BailErr(ErrTrailing, "data after root value")
+				t.BailCode(ErrTrailing, "data after root value")
 				continue
 			}
 			f := t.top()
@@ -868,11 +873,11 @@ scan:
 				if (c == '{' && t.root == RootArray) || (isArr && t.root == RootObject) || (c != '{' && c != '[') {
 					switch t.root {
 					case RootArray:
-						t.BailErr(ErrRoot, "root is not an array")
+						t.BailCode(ErrRoot, "root is not an array")
 					case RootAny:
-						t.BailErr(ErrRoot, "root is not an object or array")
+						t.BailCode(ErrRoot, "root is not an object or array")
 					default:
-						t.BailErr(ErrRoot, "root is not an object")
+						t.BailCode(ErrRoot, "root is not an object")
 					}
 					continue
 				}
@@ -892,26 +897,26 @@ scan:
 			switch c {
 			case '}', ']':
 				if (c == '}') != (f.kind == fkObj) {
-					t.BailErr(ErrSyntax, "mismatched closing bracket")
+					t.BailCode(ErrSyntax, "mismatched closing bracket")
 					continue
 				}
 				if f.kind == fkObj && (f.ph == phColon || f.ph == phValue) {
-					t.BailErr(ErrSyntax, "missing value after key")
+					t.BailCode(ErrSyntax, "missing value after key")
 					continue
 				}
 				if f.kind == fkArr && f.ph == phValue && f.idx >= 0 {
-					t.BailErr(ErrSyntax, "trailing comma in array")
+					t.BailCode(ErrSyntax, "trailing comma in array")
 					continue
 				}
 				if f.kind == fkObj && f.ph == phKey && f.n > 0 {
-					t.BailErr(ErrSyntax, "trailing comma in object")
+					t.BailCode(ErrSyntax, "trailing comma in object")
 					continue
 				}
 				t.closeContainer()
 				i++
 			case ':':
 				if f.kind != fkObj || f.ph != phColon {
-					t.BailErr(ErrSyntax, "unexpected colon")
+					t.BailCode(ErrSyntax, "unexpected colon")
 					continue
 				}
 				t.kvRaw = append(t.kvRaw, t.wsRaw...)
@@ -921,7 +926,7 @@ scan:
 				i++
 			case ',':
 				if f.ph != phComma {
-					t.BailErr(ErrSyntax, "unexpected comma")
+					t.BailCode(ErrSyntax, "unexpected comma")
 					continue
 				}
 				t.w.trailWs(t.wsRaw) // whitespace between a value and its comma: parked on the output level, written verbatim with the next separator
@@ -973,7 +978,7 @@ scan:
 				i++
 			default:
 				if !t.lit.start(c) {
-					t.BailErr(ErrSyntax, "invalid character")
+					t.BailCode(ErrSyntax, "invalid character")
 					continue
 				}
 				if !t.valueStart(f, t.lit.kind) {
@@ -1008,12 +1013,12 @@ func (t *Transformer) flush(p []byte, rs, end int) int {
 func (t *Transformer) valueStart(f *frame, kind ValueKind) bool {
 	if f.kind == fkObj {
 		if f.ph != phValue {
-			t.BailErr(ErrSyntax, "unexpected value")
+			t.BailCode(ErrSyntax, "unexpected value")
 			return false
 		}
 		if t.fieldTypes != nil && len(t.path) == 1 && kind != KindNull {
 			if want, ok := t.fieldTypes[t.path[0].k]; ok && want&typeBit(kind) == 0 {
-				t.BailErr(ErrUnsupported, "field "+t.path[0].k+" cannot be "+kind.String())
+				t.BailCode(ErrUnsupported, "field "+t.path[0].k+" cannot be "+kind.String())
 				return false
 			}
 		}
@@ -1021,7 +1026,7 @@ func (t *Transformer) valueStart(f *frame, kind ValueKind) bool {
 		t.wsRaw = t.wsRaw[:0]
 	} else {
 		if f.ph != phValue {
-			t.BailErr(ErrSyntax, "missing comma between array elements")
+			t.BailCode(ErrSyntax, "missing comma between array elements")
 			return false
 		}
 		// start of an array element
@@ -1051,15 +1056,15 @@ func (t *Transformer) apply(f *frame, act *Action, kind ValueKind) bool {
 	isContainer := kind == KindObject || kind == KindArray
 	switch act.kind {
 	case akBail:
-		t.BailErr(act.code, act.reason)
+		t.BailCode(act.code, act.reason)
 		return false
 	case akProbe:
-		t.BailErr(ErrMisuse, "Probe cannot be nested")
+		t.BailCode(ErrMisuse, "Probe cannot be nested")
 		return false
 	case akEnter:
 		if !isContainer {
 			if !act.lenient {
-				t.BailErr(ErrUnsupported, "expected an object or array")
+				t.BailCode(ErrUnsupported, "expected an object or array")
 				return false
 			}
 			act.kind = akPass
@@ -1092,7 +1097,7 @@ func (t *Transformer) apply(f *frame, act *Action, kind ValueKind) bool {
 		return true
 	case akPass, akObserve:
 		if act.inner && kind != KindString {
-			t.BailErr(ErrUnsupported, "Inner requires a string value")
+			t.BailCode(ErrUnsupported, "Inner requires a string value")
 			return false
 		}
 		level := int(act.level)
@@ -1110,7 +1115,7 @@ func (t *Transformer) apply(f *frame, act *Action, kind ValueKind) bool {
 			ok = t.w.ElemRawAt(level, t.elemWs)
 		}
 		if !ok {
-			t.BailErr(ErrMisuse, "target output level already has an open child level")
+			t.BailCode(ErrMisuse, "target output level already has an open child level")
 			return false
 		}
 		if len(act.prefix) > 0 {
@@ -1145,7 +1150,7 @@ func (t *Transformer) apply(f *frame, act *Action, kind ValueKind) bool {
 		return true
 	case akDefer:
 		if f.kind != fkObj {
-			t.BailErr(ErrMisuse, "Defer applies only to object keys")
+			t.BailCode(ErrMisuse, "Defer applies only to object keys")
 			return false
 		}
 		t.regKey = t.Last()
@@ -1153,14 +1158,14 @@ func (t *Transformer) apply(f *frame, act *Action, kind ValueKind) bool {
 		return true
 	case akPrefix:
 		if kind != KindString {
-			t.BailErr(ErrUnsupported, "Prefix requires a string value")
+			t.BailCode(ErrUnsupported, "Prefix requires a string value")
 			return false
 		}
 		act.inner = true
 		t.beginRegion(rtPrefix, act)
 		return true
 	}
-	t.BailErr(ErrMisuse, "unknown action")
+	t.BailCode(ErrMisuse, "unknown action")
 	return false
 }
 
@@ -1303,7 +1308,7 @@ func (t *Transformer) emitRegion(b []byte) {
 func (t *Transformer) capAppend(b []byte) {
 	if t.regCap > 0 && len(t.capBuf)+len(b) > t.regCap {
 		t.limitAt = t.regCap - len(t.capBuf)
-		t.BailErr(ErrLimit, "capture limit exceeded")
+		t.BailCode(ErrLimit, "capture limit exceeded")
 		return
 	}
 	if t.budget > 0 && t.Buffered()+len(b) > t.budget {
@@ -1311,7 +1316,7 @@ func (t *Transformer) capAppend(b []byte) {
 		if t.limitAt < 0 {
 			t.limitAt = 0
 		}
-		t.BailErr(ErrLimit, "buffer budget exceeded")
+		t.BailCode(ErrLimit, "buffer budget exceeded")
 		return
 	}
 	t.capBuf = append(t.capBuf, b...)
@@ -1324,7 +1329,7 @@ func (t *Transformer) runPrefix(complete bool) {
 		return
 	}
 	if resume < 0 || resume > len(t.capBuf) {
-		t.BailErr(ErrMisuse, "OnPrefix returned an invalid resume offset")
+		t.BailCode(ErrMisuse, "OnPrefix returned an invalid resume offset")
 		return
 	}
 	switch act.kind {
@@ -1339,10 +1344,10 @@ func (t *Transformer) runPrefix(complete bool) {
 		t.regT = rtSkip
 		t.regSuf = nil
 	case akBail:
-		t.BailErr(act.code, act.reason)
+		t.BailCode(act.code, act.reason)
 		return
 	default:
-		t.BailErr(ErrMisuse, "OnPrefix must return Pass, Skip or Bail")
+		t.BailCode(ErrMisuse, "OnPrefix must return Pass, Skip or Bail")
 		return
 	}
 	t.capBuf = t.capBuf[:0]
@@ -1368,7 +1373,7 @@ func (t *Transformer) endRegion() {
 	case rtValidate:
 		if !t.valOver && t.valSub != nil {
 			if !validateAgainst(t.capBuf, t.valSub) {
-				t.BailErr(ErrUnsupported, "field "+t.path[0].k+" holds a value of the wrong type")
+				t.BailCode(ErrUnsupported, "field "+t.path[0].k+" holds a value of the wrong type")
 				return
 			}
 		}
@@ -1400,7 +1405,7 @@ func (t *Transformer) onKeyDone() {
 	if t.keyEsc { // an escaped key: decode as JSON before dispatching (kvRaw still holds the original)
 		k, ok := decodeKey(t.keyBuf)
 		if !ok {
-			t.BailErr(ErrSyntax, "invalid escape in key")
+			t.BailCode(ErrSyntax, "invalid escape in key")
 			return
 		}
 		key = k
@@ -1427,7 +1432,7 @@ func (t *Transformer) onKeyDone() {
 			}
 		}
 		if dup && (t.DupKeyBail || t.dup == DupKeysBail) {
-			t.BailErr(ErrDuplicateKey, "duplicate key "+strconv.Quote(key))
+			t.BailCode(ErrDuplicateKey, "duplicate key "+strconv.Quote(key))
 			return
 		}
 		if !dup {
@@ -1441,7 +1446,7 @@ func (t *Transformer) onKeyDone() {
 	t.pend = t.cur().OnKey(t)
 	t.pendSet = true
 	if t.pend.kind == akBail {
-		t.BailErr(t.pend.code, t.pend.reason)
+		t.BailCode(t.pend.code, t.pend.reason)
 	}
 }
 
@@ -1480,7 +1485,7 @@ func (t *Transformer) closeContainer() {
 	}
 	if len(f.deferred) > 0 {
 		// The protocol neither replayed nor explicitly dropped them: a protocol bug, and swallowing it silently would produce a request with different meaning.
-		t.BailErr(ErrLeftoverDefer, "deferred items not released before the container closed")
+		t.BailCode(ErrLeftoverDefer, "deferred items not released before the container closed")
 		return
 	}
 	flat, lazy := f.flat, f.lazy
@@ -1525,7 +1530,7 @@ func (t *Transformer) replayKV(kv DeferredKV) {
 	t.pend = t.cur().OnKey(t)
 	t.pendSet = true
 	if t.pend.kind == akBail {
-		t.BailErr(t.pend.code, t.pend.reason)
+		t.BailCode(t.pend.code, t.pend.reason)
 		return
 	}
 	f.ph = phValue
@@ -1550,7 +1555,7 @@ func (t *Transformer) scanStrUTF8(p []byte, i int) int {
 				f := utf8First[c]
 				sz := int(f & 7)
 				if sz == 0 {
-					t.BailErr(ErrSyntax, "invalid UTF-8 sequence")
+					t.BailCode(ErrSyntax, "invalid UTF-8 sequence")
 					return i
 				}
 				if i+sz <= len(p) {
@@ -1563,7 +1568,7 @@ func (t *Transformer) scanStrUTF8(p []byte, i int) int {
 						ok = ok && p[i+3] >= 0x80 && p[i+3] <= 0xBF
 					}
 					if !ok {
-						t.BailErr(ErrSyntax, "invalid UTF-8 sequence")
+						t.BailCode(ErrSyntax, "invalid UTF-8 sequence")
 						return i
 					}
 					i += sz
@@ -1571,14 +1576,14 @@ func (t *Transformer) scanStrUTF8(p []byte, i int) int {
 				}
 			}
 			if !t.u8.step(c) { // a sequence split across chunks: byte by byte
-				t.BailErr(ErrSyntax, "invalid UTF-8 sequence")
+				t.BailCode(ErrSyntax, "invalid UTF-8 sequence")
 				return i
 			}
 			i++
 			continue
 		}
 		if t.u8.need > 0 {
-			t.BailErr(ErrSyntax, "invalid UTF-8 sequence")
+			t.BailCode(ErrSyntax, "invalid UTF-8 sequence")
 			return i
 		}
 		i = scanStringBodyUTF8(p, i)

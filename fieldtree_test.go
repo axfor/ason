@@ -342,3 +342,29 @@ func TestSetFieldTreeAcceptsOversizeContainer(t *testing.T) {
 		t.Fatalf("超过上限的容器被拒了：%s", why)
 	}
 }
+
+// 树里本来就带着根字段自己的类型，所以设了树就不该再要求调用方设一遍扁平表。
+// 这是 API 定型时合并的一处：两个入口做同一件事，调用方漏设一个就是静默地少了一层校验。
+func TestSetFieldTreeImpliesRootTypes(t *testing.T) {
+	tree := FieldTreeOf(&treeRoot{}, 6)
+
+	// 只设树，根级类型错误也要抓到
+	tr := NewTransformer(BaseProtocol{})
+	tr.SetFieldTree(tree)
+	tr.Write([]byte(`{"name":123}`)) // name 是 string
+	tr.Finish()
+	if bad, _ := tr.Unsupported(); !bad {
+		t.Fatal("只设树时，根级类型错误没被抓到")
+	}
+
+	// 调用方自己设过扁平表时，不覆盖它
+	custom := map[string]FieldTypes{"name": TypeAny}
+	tr2 := NewTransformer(BaseProtocol{})
+	tr2.SetFieldTypes(custom)
+	tr2.SetFieldTree(tree)
+	tr2.Write([]byte(`{"name":123}`))
+	tr2.Finish()
+	if bad, why := tr2.Unsupported(); bad {
+		t.Fatalf("调用方显式设的表被树覆盖了：%s", why)
+	}
+}
