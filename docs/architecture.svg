@@ -20,6 +20,7 @@
     .tag  { font-size:10px; fill:#59636e; letter-spacing:.4px }
     .s    { font-size:11px; fill:#59636e }
     .s.ac { fill:#8250df }
+    .s2   { font-size:10.5px; fill:#59636e }
     .m    { font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:10.5px;
             fill:#59636e }
     .lbl  { font-size:11.5px; font-weight:600 }
@@ -36,7 +37,7 @@
       .box  { fill:#161b22; stroke:#30363d }
       .band { fill:#1c1710; stroke:#d29922 }
       text  { fill:#e6edf3 }
-      .tag, .s, .m { fill:#9198a1 }
+      .tag, .s, .m, .s2 { fill:#9198a1 }
       .s.ac { fill:#ab7df8 }
       .ev   { fill:#4493f8 }  .evs { stroke:#4493f8 }
       .ac   { fill:#ab7df8 }  .acs { stroke:#ab7df8 }
@@ -98,7 +99,7 @@
 
   <path class="flow bys" d="M338 250 L516 250" marker-end="url(#aBy)"/>
   <text class="lbl by" x="427" y="238" text-anchor="middle">bytes</text>
-  <text class="s"      x="427" y="272" text-anchor="middle">pass-through ranges · region output</text>
+  <text class="s2"     x="424" y="272" text-anchor="middle">pass-through ranges · region output</text>
 
   <path class="flow inks" d="M766 250 L828 250" marker-end="url(#aInk)"/>
   <text class="lbl" x="797" y="238" text-anchor="middle">Out() / sink</text>

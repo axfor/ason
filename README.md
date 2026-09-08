@@ -49,13 +49,14 @@ array roots dispatch by index), `SetDupKeys` (`DupKeysPass`, `DupKeysBail`, or `
 first-wins), `SetValidateUTF8` (RFC 3629 validation of strings and keys, off by default like `encoding/json`;
 whole sequences are checked with one table lookup, sequences split across chunks fall back to a byte DFA), and
 `SetFieldTypes` / `SetFieldTree` (reject, while streaming, a value whose type the struct the caller would have
-unmarshalled into cannot hold — derived from that struct with `FieldTypesOf` / `FieldTreeOf`).
+unmarshalled into cannot hold — derived from that struct with `FieldTypesOf` / `FieldTreeOf`). `SetKeyCache`
+shares one key intern cache across transformers, and `SetOutBuffer` builds the output in a buffer the caller
+owns.
 
 `SetSink(func([]byte))` hands committed output to a callback at the end of each `Write` instead of returning
 it from `Out()`, and reuses the output buffer afterwards: a 1MB stream in 16KB chunks allocates 17 times and
 168KB in total instead of 77 times and 1.2MB, at about 4.2 GB/s instead of 2.7. Use it when the output is
 consumed immediately (written to a host or a connection); the slice is only valid inside the callback.
-`SetOutBuffer` goes one step further and builds the output in a buffer the caller owns and reuses.
 
 When the transformer stops, `Err()` returns an `*Error` with a `Code` (`ErrSyntax`, `ErrIncomplete`, `ErrRoot`,
 `ErrTrailing`, `ErrDuplicateKey`, `ErrLimit`, `ErrLeftoverDefer`, `ErrUnsupported` for a protocol's own `Bail`,
@@ -111,6 +112,8 @@ Nothing in that state knows where a chunk ends, which is the property the chunk-
 same document fed at 1, 3, 7, 64 and 4096 bytes produces the same output, the same errors and the same offsets.
 Keys are interned through a direct-mapped 256-slot cache (a fixed 4KB, whatever the document does), so the
 repeated keys that make up almost every dispatch do not allocate, and a flood of distinct keys cannot grow it.
+`SetKeyCache` shares one cache across transformers — the keys of one document are the keys of the next, so
+after the first one a dispatch allocates nothing at all; a cache belongs to one goroutine at a time.
 
 ### The lazy writer
 
@@ -272,7 +275,9 @@ ason 是 Go 的通用流式 JSON 转换框架：文档边到达边改写，按�
 - **常数状态、与分块无关**——三个定长状态机：字节态（idle / key / 字符串 / 标量 + 转义与 `\u` 计数）、
   帧阶段（key → 冒号 → 值 → 逗号）、区域阶段（9 个阶段外加一个非法结果，把容器种类编码进阶段里，逗号 / 冒号 / 字符串 / 标量查一次表，
   只有括号动位栈）。状态里没有任何东西知道块在哪断——同一文档按 1 / 3 / 7 / 64 / 4096 字节喂入，输出、错误与偏移完全一致。
-  key 走 256 槽直接映射的 intern 缓存（固定 4KB），重复 key 不分配，海量不同 key 也撑不大它。
+  key 走 256 槽直接映射的 intern 缓存（固定 4KB），重复 key 不分配，海量不同 key 也撑不大它；
+  `SetKeyCache` 让多个 transformer 共用一份——一份文档的 key 就是下一份的 key，第一份之后派发一次分配都不用
+  （缓存同一时刻只属于一个 goroutine）。
 - **惰性写出器**——`Enter` 只登记层不写括号；第一次往里写才打开它和所有未打开的祖先，逗号在各层自动处理，
   协议代码永远不管顺序。没写过的层闭合时物化成 `{}` / `[]`，`Lazy` 则一个字节都不留。`Flat` 让输入容器不占输出层，
   `PushObj` / `PushArr` / `Pop` 让协议自建层——两者配合把一个输入容器落进多层嵌套输出。`At(level)` 往外层写，
