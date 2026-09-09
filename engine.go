@@ -195,6 +195,10 @@ type Transformer struct {
 	dead        bool
 	rootSeen    bool
 	rootDone    bool
+	suspendReq  bool // a callback asked for a suspension: the scan stops at the next byte boundary
+	suspended   bool // stopped by Suspend; held is the unconsumed rest of that Write's chunk, Resume scans it
+	finishing   bool // inside Finish (Tail): a Suspend here is a misuse
+	held        []byte
 	lastChunk   int                   // length of the chunk the last Write scanned; drain's buffer-shrink heuristic wants it
 	fieldTypes  map[string]FieldTypes // root-level field -> the JSON types it may have; nil disables the check
 	fieldTree   *FieldTree            // recursive form; nil disables nested checking
@@ -396,7 +400,7 @@ func (t *Transformer) RootDone() bool { return t.rootDone }
 // chunk. With a sink set the output is handed over at the end of every Write; without one the caller has to
 // take it with Out first.
 func (t *Transformer) Aligned() bool {
-	if !t.committed || t.unsupported || t.dead || t.pendSet || t.replaying > 0 || t.deferredBytes > 0 {
+	if !t.committed || t.unsupported || t.dead || t.pendSet || t.replaying > 0 || t.deferredBytes > 0 || t.suspended {
 		return false
 	}
 	if !t.regOpen || t.regT != rtOut || len(t.regSuf) > 0 || t.valSub != nil {
@@ -445,6 +449,45 @@ func (t *Transformer) SetOutBuffer(b []byte) {
 // garbage as it has input. Meant for callers that consume immediately (writing to a host or a connection). The sink must consume b before returning; b is invalid afterwards.
 // With a sink set Out() always returns nothing. Must be called before the first Write.
 func (t *Transformer) SetSink(sink func(b []byte)) { t.sink = sink }
+
+// Suspend, called from a protocol callback during Write, stops the scan at the next byte boundary: the callback finishes, the
+// rest of the chunk is kept, and Write returns with Suspended true. The protocol may then write to the output from outside
+// any callback (a value it had to fetch from elsewhere, say), and Resume scans the kept bytes and carries on.
+//
+// A suspension waits for something outside the document, so it is a misuse during a Defer replay or in Finish.
+func (t *Transformer) Suspend() {
+	if t.dead {
+		return
+	}
+	if t.replaying > 0 || t.finishing {
+		t.BailCode(ErrMisuse, "Suspend outside a Write callback")
+		return
+	}
+	t.suspendReq = true
+}
+
+// Suspended reports whether the scan is stopped by Suspend. Write and Finish are misuses until Resume.
+func (t *Transformer) Suspended() bool { return t.suspended }
+
+// Resume continues a suspended scan with the bytes kept at the suspension. It may suspend again before they are used up.
+func (t *Transformer) Resume() {
+	if !t.suspended || t.dead {
+		return
+	}
+	t.suspended = false
+	held := t.held
+	t.held = nil
+	t.Write(held)
+}
+
+// Flush hands the releasable output to the sink now, outside a Write: for output produced while suspended, so a large
+// value written in slices leaves the transformer slice by slice instead of piling up. Nothing happens without a sink or
+// before the commit point.
+func (t *Transformer) Flush() {
+	if t.sink != nil && !t.dead {
+		t.drain(t.lastChunk)
+	}
+}
 
 // drain hands the releasable output to the sink (past the commit point, no bail).
 func (t *Transformer) drain(chunk int) {
@@ -501,13 +544,26 @@ func (t *Transformer) Write(p []byte) {
 	if t.dead {
 		return
 	}
+	if t.suspended {
+		t.BailCode(ErrMisuse, "Write while suspended")
+		return
+	}
 	t.scanBase = int64(t.scanned)
 	t.chunkLen = len(p)
 	t.w.startChunk(p)
 	t.scanned += len(p)
 	t.lastChunk = len(p)
 	t.w.hint = len(p) // size for the first real write; a chunk that stays virtual never allocates at all
-	t.scan(p)
+	n := t.scan(p)
+	if t.suspendReq {
+		t.suspendReq = false
+		if !t.dead {
+			// Stopped inside the chunk: the bytes not consumed are kept (a copy: the caller owns p) and scanned again by Resume.
+			t.suspended = true
+			t.scanned = int(t.scanBase) + n
+			t.held = append([]byte(nil), p[n:]...)
+		}
+	}
 	t.fixOffset(int64(t.scanned))
 	if !t.committed && !t.unsupported {
 		if !t.checkBudget(0) {
@@ -528,6 +584,12 @@ func (t *Transformer) Finish() []byte {
 	if t.dead {
 		return nil
 	}
+	if t.suspended {
+		t.BailCode(ErrMisuse, "Finish while suspended")
+		return nil
+	}
+	t.finishing = true
+	defer func() { t.finishing = false }()
 	t.scanBase = int64(t.scanned)
 	if t.st == sInScalar {
 		t.scan([]byte{' '})
@@ -674,7 +736,7 @@ func (t *Transformer) top() *frame {
 	return &t.frames[len(t.frames)-1]
 }
 
-func (t *Transformer) scan(p []byte) {
+func (t *Transformer) scan(p []byte) int {
 	rs := -1
 	if t.regOpen {
 		rs = 0
@@ -689,6 +751,9 @@ func (t *Transformer) scan(p []byte) {
 	}
 scan:
 	for i < len(p) && !t.dead {
+		if t.suspendReq { // a callback asked to stop: everything from here on is kept for Resume
+			break
+		}
 		c := p[i]
 		switch t.st {
 		case sInStr:
@@ -1068,6 +1133,7 @@ scan:
 	if rs >= 0 && t.regOpen && !t.dead {
 		t.flush(p, rs, len(p))
 	}
+	return i
 }
 
 // flush hands p[rs:end] to the region and returns the new rs (-1).

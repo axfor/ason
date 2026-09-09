@@ -169,6 +169,16 @@ enters itself and its own `Defer` replays; the container's `OnLeave` goes back t
 it can `Pop` what it pushed. Paths and depths stay absolute, so a reusable part does not need a forwarding
 branch in each of the six callbacks.
 
+### Suspending the scan
+
+A protocol may need something the document does not carry -- an image it has to fetch and inline, say.
+`t.Suspend()`, called from any callback during a `Write`, stops the scan at the next byte boundary: the
+callback finishes, the rest of the chunk is kept, and `Write` returns with `Suspended()` true. Until `Resume()`
+the protocol owns the output: it writes the value from outside any callback, in slices if it is large, and
+`Flush()` hands each slice to the sink as it goes, so nothing piles up. `Resume()` scans the kept bytes and
+carries on, and may suspend again. `Write` or `Finish` while suspended, or a `Suspend` during a Defer replay or
+in `Tail`, is a misuse and bails with `ErrMisuse`.
+
 ### The commit window
 
 No output is released before `CommitBytes` (64KB) of input has been scanned. Inside that window a `Bail` costs
