@@ -148,6 +148,22 @@ by matching the text. A protocol's own `Bail` reason is kept verbatim, and `Bail
 left. `Out()` transfers ownership of the buffer instead of copying it, so what accumulated before the commit
 point is released with it, and a stream's live memory under high concurrency is tens of kilobytes.
 
+## Waiting for something outside the document
+
+A protocol sometimes needs a value the document does not carry: the OpenAI → Gemini conversion inlines http(s)
+images the buffered code downloads once it has the whole body. A single-pass scanner has no natural place for
+that, so the engine offers one: `Suspend`, called from a callback, stops the scan at the next byte boundary. The
+callback finishes, the unconsumed rest of the chunk is kept inside the transformer, and `Write` returns with
+`Suspended` true. The protocol then owns the output until `Resume`: it writes the value from outside any
+callback -- in slices, calling `Flush` between them so each leaves through the sink before the next is built --
+and `Resume` scans the kept bytes and carries on, possibly suspending again. Nothing changes for the memory
+bound: the slice is the only new holding, the kept bytes are at most one chunk, and the input that arrives
+while the protocol waits is the caller's to hold, which for a proxy means the host's buffer rather than the
+plugin's memory.
+
+`Write` and `Finish` while suspended, and `Suspend` during a Defer replay or from `Tail`, are misuses
+(`ErrMisuse`): a suspension waits for the world, and the replay and the tail are moments with no world to wait for.
+
 ## What is tested here, and what you should test
 
 This repository's tests cover the engine itself: the action and replay rules; formatting fidelity down to the
