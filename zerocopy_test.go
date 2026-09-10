@@ -362,3 +362,18 @@ func TestCompactWhileWaiting(t *testing.T) {
 		t.Fatalf("got %q want %q", out, in)
 	}
 }
+
+// AppendWith puts the encoder's output straight into the buffer, where Raw would have copied it in from elsewhere.
+func TestAppendWith(t *testing.T) {
+	var direct, viaCopy Writer
+	payload := []byte(strings.Repeat("z", 3000))
+	direct.AppendWith(func(dst []byte) []byte { return append(dst, payload...) })
+	viaCopy.Raw(payload)
+	if string(direct.buf) != string(viaCopy.buf) {
+		t.Fatalf("AppendWith wrote %d bytes, Raw wrote %d", len(direct.buf), len(viaCopy.buf))
+	}
+	direct.AppendWith(func(dst []byte) []byte { return append(dst, "tail"...) })
+	if string(direct.buf) != string(payload)+"tail" {
+		t.Fatal("a second append did not continue where the first stopped")
+	}
+}

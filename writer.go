@@ -252,6 +252,15 @@ func (w *Writer) startChunk(p []byte) {
 	w.vp, w.vlen, w.virt = p, 0, len(w.buf) == 0
 }
 
+// AppendWith writes whatever f appends to the output buffer, without a buffer of the caller's own in between: f is
+// handed the buffer itself and returns it grown. For output that is produced by an encoder rather than copied --
+// base64 of a fetched image, say -- where the intermediate would be as large as the output and allocated per slice.
+func (w *Writer) AppendWith(f func(dst []byte) []byte) {
+	w.touched = true
+	w.materialise()
+	w.buf = f(w.buf)
+}
+
 // release drops the reference to the chunk the caller handed in. Between two Writes nothing reads it, and a scan that
 // pauses there -- waiting for a fetch, or for a field the header needs -- would otherwise keep that whole chunk alive
 // for as long as it waits, once per stream. Called when what the chunk produced has already been taken.
