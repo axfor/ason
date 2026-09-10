@@ -306,3 +306,37 @@ func TestCommitNowIsInertAfterCommitOrBail(t *testing.T) {
 		t.Fatal("bail 之后不该能提交")
 	}
 }
+
+// What a paused scan keeps. A transformer that has been fed and then waits -- for a fetch, or for a field the caller
+// needs before it can release -- must not hold on to the chunk it was last given: a gateway runs hundreds of these at
+// once and the chunks are the largest thing in sight.
+func TestChunkNotRetainedBetweenWrites(t *testing.T) {
+	in := `{"a":1,"b":"` + strings.Repeat("y", 4096) + `"}`
+	t.Run("with a sink", func(t *testing.T) {
+		tr := NewTransformer(&probeProto{})
+		tr.SetCommitBytes(1)
+		tr.SetSink(func([]byte) {})
+		tr.Write([]byte(in[:2000]))
+		if tr.w.vp != nil {
+			t.Fatalf("the chunk is still referenced after Write: %d bytes", len(tr.w.vp))
+		}
+		tr.Write([]byte(in[2000:]))
+		if out := string(tr.Finish()); out != "" || tr.w.vp != nil {
+			t.Fatalf("out %q, chunk referenced %v", out, tr.w.vp != nil)
+		}
+	})
+	t.Run("without a sink", func(t *testing.T) {
+		tr := NewTransformer(&probeProto{})
+		tr.SetCommitBytes(1)
+		tr.Write([]byte(in[:2000]))
+		got := string(tr.Out()) // the caller owns these bytes; the transformer must not keep the chunk as well
+		if tr.w.vp != nil {
+			t.Fatalf("the chunk is still referenced after Out: %d bytes", len(tr.w.vp))
+		}
+		tr.Write([]byte(in[2000:]))
+		got += string(tr.Out()) + string(tr.Finish())
+		if got != in {
+			t.Fatalf("got %q want %q", got, in)
+		}
+	})
+}

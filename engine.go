@@ -520,9 +520,10 @@ func (t *Transformer) Out() []byte {
 	}
 	if t.w.virt { // never materialised: the output is a slice of the caller's chunk
 		b := t.w.vp[:t.w.vlen]
-		t.w.vlen = 0
+		t.w.release() // handed over: keeping the chunk here would pin it until the next Write
 		return b
 	}
+	t.w.release()
 	if len(t.w.buf) == 0 {
 		return nil
 	}
@@ -575,6 +576,7 @@ func (t *Transformer) Write(p []byte) {
 	}
 	if t.sink != nil {
 		t.drain(len(p))
+		t.w.release() // the sink has what this chunk produced; holding the caller's bytes past that pins them
 	}
 }
 
@@ -611,6 +613,7 @@ func (t *Transformer) Finish() []byte {
 	t.committed = true
 	if t.sink != nil {
 		t.drain(0)
+		t.w.release()
 		return nil
 	}
 	return t.Out()

@@ -252,6 +252,13 @@ func (w *Writer) startChunk(p []byte) {
 	w.vp, w.vlen, w.virt = p, 0, len(w.buf) == 0
 }
 
+// release drops the reference to the chunk the caller handed in. Between two Writes nothing reads it, and a scan that
+// pauses there -- waiting for a fetch, or for a field the header needs -- would otherwise keep that whole chunk alive
+// for as long as it waits, once per stream. Called when what the chunk produced has already been taken.
+func (w *Writer) release() {
+	w.vp, w.vlen, w.virt = nil, 0, false
+}
+
 // output returns what this chunk produced: the untouched input run when still virtual, the buffer otherwise.
 func (w *Writer) output() []byte {
 	if w.virt {
