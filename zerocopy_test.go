@@ -340,3 +340,25 @@ func TestChunkNotRetainedBetweenWrites(t *testing.T) {
 		}
 	})
 }
+
+// Compact hands back what a waiting transformer does not need, and the scan carries on as if nothing happened.
+func TestCompactWhileWaiting(t *testing.T) {
+	in := `{"a":1,"keep":"` + strings.Repeat("y", 8192) + `","b":2}`
+	tr := NewTransformer(&probeProto{})
+	tr.SetCommitBytes(1)
+	var out []byte
+	tr.SetSink(func(b []byte) { out = append(out, b...) })
+	tr.Write([]byte(in[:6000]))
+	tr.Compact()
+	if tr.w.buf != nil || tr.w.vp != nil {
+		t.Fatalf("still holding: buf %d, chunk %v", cap(tr.w.buf), tr.w.vp != nil)
+	}
+	tr.Write([]byte(in[6000:]))
+	tr.Finish()
+	if bad, why := tr.Unsupported(); bad {
+		t.Fatal(why)
+	}
+	if string(out) != in {
+		t.Fatalf("got %q want %q", out, in)
+	}
+}

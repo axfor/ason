@@ -466,6 +466,17 @@ func (t *Transformer) Suspend() {
 	t.suspendReq = true
 }
 
+// Compact hands back the room the transformer is holding but does not need: the output buffer once its bytes have
+// been taken, and the reference to the last chunk. For a scan that is about to wait -- for a fetch, or for a field the
+// caller needs before it can release anything -- where what it keeps is multiplied by every stream in flight. The next
+// write allocates again, sized to the chunk it gets.
+func (t *Transformer) Compact() {
+	if len(t.w.buf) == 0 && !t.w.fixed {
+		t.w.buf = nil
+	}
+	t.w.release()
+}
+
 // Suspended reports whether the scan is stopped by Suspend. Write and Finish are misuses until Resume.
 func (t *Transformer) Suspended() bool { return t.suspended }
 
