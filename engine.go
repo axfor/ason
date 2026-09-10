@@ -496,7 +496,10 @@ func (t *Transformer) Resume() {
 // before the commit point.
 func (t *Transformer) Flush() {
 	if t.sink != nil && !t.dead {
-		t.drain(t.lastChunk)
+		// Sized by what was just written, not by the chunk that last arrived: output produced outside a Write -- a
+		// fetched value going out slice by slice -- has nothing to do with the size of the input chunk, and judging
+		// the buffer against that would throw it away after every slice and allocate the next one from scratch.
+		t.drain(len(t.w.buf))
 	}
 }
 
