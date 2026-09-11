@@ -471,10 +471,37 @@ func (t *Transformer) Suspend() {
 // caller needs before it can release anything -- where what it keeps is multiplied by every stream in flight. The next
 // write allocates again, sized to the chunk it gets.
 func (t *Transformer) Compact() {
-	if len(t.w.buf) == 0 && !t.w.fixed {
+	switch {
+	case t.w.fixed:
+	case len(t.w.buf) == 0:
+		t.handBack()
 		t.w.buf = nil
+	case t.w.put != nil && cap(t.w.buf) > 2*len(t.w.buf)+4096:
+		// A lent buffer with a little output in it: keep a copy of just that, so a scan that waits holds what it has
+		// written rather than the room of whichever buffer it happened to be lent.
+		b := append(make([]byte, 0, len(t.w.buf)), t.w.buf...)
+		t.w.buf = t.w.buf[:0]
+		t.handBack()
+		t.w.buf = b
 	}
 	t.w.release()
+}
+
+// handBack returns an empty lent buffer to the pool.
+func (t *Transformer) handBack() {
+	if t.w.put != nil && !t.w.fixed && cap(t.w.buf) > 0 && len(t.w.buf) == 0 {
+		t.w.put(t.w.buf)
+		t.w.buf = nil
+	}
+}
+
+// SetBufferPool lends the output buffer: get supplies one when there is output to write (n is the size wanted, a
+// hint) and put takes it back once the sink has the bytes in it, instead of the transformer keeping one of its own
+// between writes. Transformers that are written in turn -- the streams of one thread -- then share a few buffers,
+// where each would otherwise hold one the size of its last chunk for as long as it lives. A buffer given with
+// SetOutBuffer is not lent, and output taken with Out belongs to the caller and is not handed back.
+func (t *Transformer) SetBufferPool(get func(n int) []byte, put func(b []byte)) {
+	t.w.get, t.w.put = get, put
 }
 
 // Suspended reports whether the scan is stopped by Suspend. Write and Finish are misuses until Resume.
@@ -513,13 +540,19 @@ func (t *Transformer) drain(chunk int) {
 			t.sink(t.w.vp[:t.w.vlen])
 			t.w.vlen = 0
 		}
+		t.handBack()
 		return
 	}
 	if len(t.w.buf) == 0 {
+		t.handBack()
 		return
 	}
 	t.sink(t.w.buf)
-	if !t.w.fixed && cap(t.w.buf) > 2*chunk+4096 {
+	if t.w.put != nil && !t.w.fixed {
+		t.w.buf = t.w.buf[:0]
+		t.handBack()
+		t.w.hint = chunk
+	} else if !t.w.fixed && cap(t.w.buf) > 2*chunk+4096 {
 		t.w.buf = nil // do not keep the large pre-commit buffer; the next chunk allocates one of chunk size which is then reused
 		t.w.hint = chunk
 	} else {
