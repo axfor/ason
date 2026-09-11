@@ -639,6 +639,9 @@ func (t *Transformer) Finish() []byte {
 	}
 	t.finishing = true
 	defer func() { t.finishing = false }()
+	// No chunk comes in: what Finish writes is the tail, a closing bracket or a few appended fields, so its buffer is
+	// sized by that and not by the last chunk (a 1MB request that stayed virtual reserved 1MB to close its root).
+	t.w.hint = 0
 	t.scanBase = int64(t.scanned)
 	if t.st == sInScalar {
 		t.scan([]byte{' '})

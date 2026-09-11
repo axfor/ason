@@ -80,3 +80,24 @@ func TestCompactShrinksALentBuffer(t *testing.T) {
 		t.Fatalf("output after Compact: %s", out)
 	}
 }
+
+// Finish sizes the buffer it writes the tail into by the tail, not by the last chunk: no chunk comes in. It used to
+// reserve as much as the last chunk -- a large object for every large request -- to write a closing bracket.
+func TestFinishDoesNotReserveByTheLastChunk(t *testing.T) {
+	for _, model := range []string{"p/m1", "q"} { // renamed, so the chunk was copied; untouched, so it stayed a view
+		body := []byte(`{"model":"` + model + `","messages":[{"role":"user","content":"` + strings.Repeat("y", 256<<10) + `"}]}`)
+		var asked []int
+		tr := NewTransformer(renameModelProto{})
+		tr.SetCommitBytes(1)
+		tr.SetBufferPool(func(n int) []byte { asked = append(asked, n); return make([]byte, 0, n) }, func([]byte) {})
+		tr.Write(body)
+		tr.Out()
+		asked = asked[:0]
+		tr.Finish()
+		for _, n := range asked {
+			if n > 4<<10 {
+				t.Fatalf("model %q: Finish asked for %dKB to write the tail of a %dKB request", model, n>>10, len(body)>>10)
+			}
+		}
+	}
+}
