@@ -292,14 +292,12 @@ func (t *Transformer) SetFieldTree(tr *FieldTree) {
 	t.fieldTree = tr
 	if tr != nil && tr.Keys != nil && t.fieldTypes == nil {
 		// The tree already carries the root fields' own types, so a caller that has a tree should not have to
-		// hand over the flat table as well.
-		m := make(map[string]FieldTypes, len(tr.Keys))
-		for k, sub := range tr.Keys {
-			if sub != nil {
-				m[k] = sub.Types
-			}
+		// hand over the flat table as well. A tree from FieldTreeOf has it ready and every transformer shares it.
+		if tr.rootTypes != nil {
+			t.fieldTypes = tr.rootTypes
+		} else {
+			t.fieldTypes = keyTypes(tr)
 		}
-		t.fieldTypes = m
 	}
 }
 

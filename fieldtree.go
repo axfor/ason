@@ -26,6 +26,11 @@ type FieldTree struct {
 	Kind FieldKind
 	Omit bool
 	Int  bool // a number field of an integer type: the decode rejects a fraction or an exponent
+
+	// rootTypes is Keys' own types as a flat table, filled in by FieldTreeOf for the root and shared, read-only, by
+	// every transformer the tree is set on: SetFieldTree used to build the same map for each one (1.8KB a stream
+	// for a chat request, as long as the stream lives).
+	rootTypes map[string]FieldTypes
 }
 
 // FieldKind is the class of Go value behind a field, as far as the round trip cares: what a JSON null decodes
@@ -105,7 +110,23 @@ func FieldTreeOf(v any, depth int) *FieldTree {
 	if rt == nil {
 		return nil
 	}
-	return treeOf(rt, depth, map[reflect.Type]bool{})
+	t := treeOf(rt, depth, map[reflect.Type]bool{})
+	t.rootTypes = keyTypes(t)
+	return t
+}
+
+// keyTypes is the flat table of the members' own types, or nil when the tree says nothing about members.
+func keyTypes(tr *FieldTree) map[string]FieldTypes {
+	if tr.Keys == nil {
+		return nil
+	}
+	m := make(map[string]FieldTypes, len(tr.Keys))
+	for k, sub := range tr.Keys {
+		if sub != nil {
+			m[k] = sub.Types
+		}
+	}
+	return m
 }
 
 func treeOf(rt reflect.Type, depth int, onPath map[reflect.Type]bool) *FieldTree {
