@@ -10,42 +10,28 @@
 
   <style>
     /* Concrete colours per class, not CSS variables: renderers outside a browser
-       (librsvg, resvg) do not resolve var() and would paint the whole figure flat. */
-    .bg   { fill:#ffffff }
-    .box  { fill:#f6f8fa; stroke:#d0d7de; stroke-width:1 }
-    .band { fill:#fff8e6; stroke:#9a6700; stroke-width:1; stroke-dasharray:5 4 }
+       (librsvg, resvg) do not resolve var() and would paint the whole figure flat.
+       One dark palette on purpose: the figure paints its own deep-black ground in every theme. */
+    .bg   { fill:#0d1117 }
+    .box  { fill:#161b22; stroke:#30363d; stroke-width:1 }
+    .band { fill:#1c1710; stroke:#d29922; stroke-width:1; stroke-dasharray:5 4 }
     text  { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
-            fill:#1f2328 }
+            fill:#e6edf3 }
     .h    { font-size:15px; font-weight:600 }
-    .tag  { font-size:10px; fill:#59636e; letter-spacing:.4px }
-    .s    { font-size:11px; fill:#59636e }
-    .s.ac { fill:#8250df }
-    .s2   { font-size:10.5px; fill:#59636e }
+    .tag  { font-size:10px; fill:#9198a1; letter-spacing:.4px }
+    .s    { font-size:11px; fill:#9198a1 }
+    .s.ac { fill:#ab7df8 }
+    .s2   { font-size:10.5px; fill:#9198a1 }
     .m    { font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:10.5px;
-            fill:#59636e }
+            fill:#9198a1 }
     .lbl  { font-size:11.5px; font-weight:600 }
-    .ev   { fill:#0969da }  .evs { stroke:#0969da }
-    .ac   { fill:#8250df }  .acs { stroke:#8250df }
-    .by   { fill:#1a7f37 }  .bys { stroke:#1a7f37 }
-    .gd   { fill:#9a6700 }
-    .ink  { fill:#1f2328 }  .inks{ stroke:#1f2328 }
+    .ev   { fill:#4493f8 }  .evs { stroke:#4493f8 }
+    .ac   { fill:#ab7df8 }  .acs { stroke:#ab7df8 }
+    .by   { fill:#3fb950 }  .bys { stroke:#3fb950 }
+    .gd   { fill:#d29922 }
+    .ink  { fill:#e6edf3 }  .inks{ stroke:#e6edf3 }
     .flow { fill:none; stroke-width:1.6 }
-    .tick { fill:none; stroke:#9a6700; stroke-width:1; stroke-dasharray:2 3; opacity:.8 }
-
-    @media (prefers-color-scheme: dark) {
-      .bg   { fill:#0d1117 }
-      .box  { fill:#161b22; stroke:#30363d }
-      .band { fill:#1c1710; stroke:#d29922 }
-      text  { fill:#e6edf3 }
-      .tag, .s, .m, .s2 { fill:#9198a1 }
-      .s.ac { fill:#ab7df8 }
-      .ev   { fill:#4493f8 }  .evs { stroke:#4493f8 }
-      .ac   { fill:#ab7df8 }  .acs { stroke:#ab7df8 }
-      .by   { fill:#3fb950 }  .bys { stroke:#3fb950 }
-      .gd   { fill:#d29922 }
-      .ink  { fill:#e6edf3 }  .inks{ stroke:#e6edf3 }
-      .tick { stroke:#d29922 }
-    }
+    .tick { fill:none; stroke:#d29922; stroke-width:1; stroke-dasharray:2 3; opacity:.8 }
   </style>
 
   <defs>
