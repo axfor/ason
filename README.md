@@ -44,7 +44,7 @@ The scanner validates JSON with the same rejection surface as `encoding/json` (s
 grammar, escapes, control characters, whitespace), byte by byte, with constant state — inside pass-through
 regions as well as in dispatched frames, which the fuzz targets assert in both directions. String bodies are
 scanned eight bytes at a time. Through a sink, a 1MB body: long strings and base64 payloads at roughly
-4.8 GB/s per core, nested content parts at roughly 0.8 GB/s, dense tool definitions at roughly 0.65 GB/s,
+4.8 GB/s per core, nested content parts at roughly 0.84 GB/s, dense tool definitions at roughly 0.69 GB/s,
 with 12 to 18 allocations per megabyte regardless of how many keys the document has.
 
 Per-transformer options: `SetCommitBytes` (commit window), `SetBudget` (cap on everything the engine may hold
