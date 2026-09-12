@@ -295,10 +295,18 @@ func (t *Transformer) SetDupKeys(DupKeys)
    **这条路整体作废**：`scan` 里的 `i` 由字符串段、转义、整块区域等多条路径更新，Go 的边界检查消除在这种形态下
    证明不出范围，换写法只会挪动成本。要动它得先让 `i` 的更新路径收敛，那是另一次结构性改造，不在本轮。
 
-5. **零拷贝 key**（降级）：key 与其周围空白不跨块时，`kvRaw` 直接切片输入缓冲，跨块才拷贝。
+5. **已放弃 · 跨流复用 Transformer（`Reset`）**：让调用方像复用缓冲那样复用 transformer，省掉每请求新建结构体与内部切片首次增长。
+   设计做完了（80 个字段逐条归类：保留容量 11 条、必须置 nil 的 4 条别名或私有副本、清零 37 个状态位、保留 9 项配置、
+   Writer 15 字段分三类），但按落地前提先量收益，量完否决：**池化驱动下每条流总共只有 7 次分配 / 1,256 字节**
+   （逐次分配全采样，300 条流：`NewTransformer` 301 个对象 / 301KB 即每流 1 次 1KB，其余 6 次是 frames / path / keyBuf
+   等切片首次增长与 key 处理）。400 条在飞流合计约 0.5MB，远低于 4MB 的 arena 台阶——省下它改变不了任何台阶，
+   而代价是一个公开 API 加 80 个字段的逐字段正确性责任，跨流残留在压测里表现为偶发输出漂移，最难查。
+   设计记录留在 ACGCluster 的 `designs/ason-Reset-设计.md`，若将来有"单 worker 上万并发流"这类形态再取用。
+
+6. **零拷贝 key**（降级）：key 与其周围空白不跨块时，`kvRaw` 直接切片输入缓冲，跨块才拷贝。
    原本排在前面，理由是"派发帧密集的输入分配减半"；但写穿之后每请求只剩 15 次分配 / 71KB，
    而上面那份 profile 里与 `kvRaw` 有关的项一个都没进前 12。先做 SWAR，这一项等有证据再提。
-6. **wasm 基准进 CI**：`GOOS=wasip1 GOARCH=wasm go test -c`，用 wazero 运行 `-test.bench`，把目标环境的数字放进 README。
+7. **wasm 基准进 CI**：`GOOS=wasip1 GOARCH=wasm go test -c`，用 wazero 运行 `-test.bench`，把目标环境的数字放进 README。
 
 验收：`bench_test.go` 三类输入的数字进 README；任何一项不能让黄金差分产生变化。
 

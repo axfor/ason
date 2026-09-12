@@ -59,7 +59,11 @@ owns.
 
 `SetSink(func([]byte))` hands committed output to a callback instead of returning it from `Out()`, and reuses
 the output buffer afterwards: a 1MB stream in 16KB chunks allocates 17 times and 154KB in total instead of 77
-times and 1.2MB. Past the commit point the bytes that are only passing through are not copied at all -- a run
+times and 1.2MB. Add `SetBufferPool` and a shared `SetKeyCache`, which is how a proxy worker drives it -- its
+streams take turns, so one request's buffer and interned keys are the next one's -- and a 1MB stream of any
+shape costs **7 allocations and 1,256 bytes**, whether it arrives in 16KB chunks or in one piece.
+
+Past the commit point the bytes that are only passing through are not copied at all -- a run
 large enough to be worth a hand-over goes to the sink as a view of the input -- so the same body delivered in
 one piece, as a proxy usually gets it, allocates 70KB rather than its own size. Use it when the output is
 consumed immediately (written to a host or a connection); the slice is only valid inside the callback.
