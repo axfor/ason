@@ -13,12 +13,18 @@ TEXT ·scanStringBodyAVX2(SB), NOSPLIT, $0-40
 	MOVQ p_len+8(FP), BX
 	MOVQ i+24(FP), DI
 
+	// VPBROADCASTB from a general register is an AVX-512BW instruction (the assembler encodes it with an EVEX
+	// prefix), and this file must run on any machine that merely has AVX2 -- a runner without AVX-512 took SIGILL
+	// on exactly that. The AVX2 form broadcasts from an xmm or from memory, so the byte goes through an xmm first.
 	MOVL $0x22, AX
-	VPBROADCASTB AX, Y0          // '"' in all 32 bytes -- needs a memory or xmm source, so via a register move
+	MOVQ AX, X0
+	VPBROADCASTB X0, Y0          // '"' in all 32 bytes
 	MOVL $0x5C, AX
-	VPBROADCASTB AX, Y1          // '\\'
+	MOVQ AX, X1
+	VPBROADCASTB X1, Y1          // '\\'
 	MOVL $0x1F, AX
-	VPBROADCASTB AX, Y2          // 0x1F, for the unsigned "at most" test
+	MOVQ AX, X2
+	VPBROADCASTB X2, Y2          // 0x1F, for the unsigned "at most" test
 
 loop:
 	LEAQ 32(DI), AX

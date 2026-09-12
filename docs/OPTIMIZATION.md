@@ -266,6 +266,30 @@ func (t *Transformer) SetDupKeys(DupKeys)
 
 ---
 
+## 测量工具链（读下面任何数字之前先看这条）
+
+**2026-09-12 之前的全部数字用 go1.25.5 测；当天开发机换成 go1.27.1，同一份代码的数字随之变化，两代不可比。**
+在 arm64 上实测同一提交：长值变快、密集结构变慢——base64 整块 12101 → **14257** MB/s、长字符串 12450 → **14338**，
+而密集 tools 687 → **603**、嵌套内容块 843 → **744**、短串 len=6 656 → **560**。`purego` 口径（纯字运算）
+base64 4758 → 4761 几乎不动，tools 687 → 612。所以下面每条结论的**方向**仍然成立（它们都是同工具链内的对照），
+但绝对数字要按其记录时的工具链读；新的对照一律用 go1.27.1 重测。
+
+1.27 另外三件与本章有关的事：
+
+- **wasm 汇编器有了 SIMD 指令，但手写这条路还没开**。指令表从 209 条零 SIMD 变成 485 条、208 处 SIMD
+  （`V128Load`、`I8x16Eq`、`I8x16LtU`、`I8x16Bitmask` 一应俱全，`I8x16LtU` 甚至能直接判 `c < 0x20`，
+  比 NEON 和 SSE2 的绕法都干净）。但实测手写 `V128Load` 会让汇编器 panic：
+  `index out of range [-21504]`，而 `21504 = RBaseWasm = MINREG`，即 `regVars[0-MINREG]`——
+  某条指令带着未设置的 `Reg` 走进了 `case AGet`。最小对照坐实了范围：只用 I64 的函数正常，
+  只加一条 `V128Load` 就崩，而不带内存操作数的 `I8x16Splat` / `I8x16Bitmask` 可以手写。
+  原因在 `assemble` 的主 `switch p.As` 里只为 `AV128Const` 开了分支，`AV128Load` / `AV128Store` 没有——
+  它们只支持编译器内部经 `obj.WasmV128` 类型生成，不支持手写。**所以 wasm 侧仍然只能走字运算版，
+  网关收益仍为零**；等哪个版本补上手写 load/store，这条路立刻值得重开。
+- **`simd` / `simd/archsimd` 包不能用**：整包带 `//go:build goexperiment.simd`，实测不开 GOEXPERIMENT
+  无法 import，**一个库不能要求下游用特殊环境变量构建**。而且它在 wasm 上走 `ops_emulated_wasm.go`
+  （纯 Go 模拟，零处 `v128`），对网关本就没有收益。
+- **`archsimd` 的 CPU 探测依赖 `internal/cpu`**，外部模块碰不到，所以自写的 `cpuid` / `xgetbv` 仍是必需。
+
 ## M3 · v0.4 —— 性能上限
 
 现状：长字符串 / base64 约 4.8 GB/s（SWAR），嵌套内容块约 0.84 GB/s，结构密集体约 0.69 GB/s。后者的成本不在某一处判断，
