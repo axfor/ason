@@ -71,3 +71,52 @@ func BenchmarkMatrix(b *testing.B) {
 		}
 	}
 }
+
+// BenchmarkMatrixPooled is the same matrix driven the way an integration actually drives it: a pool lends the output
+// buffer and one key cache is shared, which is what a proxy worker does -- its streams take turns, so the buffer and
+// the interned keys of one request are the next request's. The plain matrix has neither, so it reports the buffer the
+// commit window sizes as a per-request allocation, which overstates what a caller like that pays.
+func BenchmarkMatrixPooled(b *testing.B) {
+	for _, body := range matrixBodies() {
+		for _, chunk := range []int{16 << 10, 1 << 30} {
+			name := body.name + "/chunk=whole"
+			if chunk <= len(body.body) {
+				name = fmt.Sprintf("%s/chunk=%dKB", body.name, chunk>>10)
+			}
+			in := body.body
+			// Outside b.Run so they stay warm across iterations, as they do across the streams of one worker.
+			var pool [][]byte
+			get := func(n int) []byte {
+				if k := len(pool); k > 0 {
+					x := pool[k-1]
+					pool = pool[:k-1]
+					return x
+				}
+				return make([]byte, 0, n)
+			}
+			put := func(x []byte) { pool = append(pool, x) }
+			keys := NewKeyCache()
+			b.Run(name, func(b *testing.B) {
+				b.SetBytes(int64(len(in)))
+				b.ReportAllocs()
+				for i := 0; i < b.N; i++ {
+					tr := NewTransformer(BaseProtocol{})
+					tr.SetKeyCache(keys)
+					tr.SetBufferPool(get, put)
+					tr.SetSink(func([]byte) {})
+					for off := 0; off < len(in); off += chunk {
+						end := off + chunk
+						if end > len(in) {
+							end = len(in)
+						}
+						tr.Write(in[off:end])
+					}
+					tr.Finish()
+					if bad, why := tr.Unsupported(); bad {
+						b.Fatal(why)
+					}
+				}
+			})
+		}
+	}
+}
