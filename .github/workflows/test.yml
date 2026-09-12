@@ -70,6 +70,24 @@ jobs:
       - name: every architecture builds and selects the right scan
         run: sh hack/portability-check.sh
 
+  simd:
+    name: amd64 through simd/archsimd (GOEXPERIMENT=simd)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "stable"
+      # The amd64 scan has two implementations: hand-written SSE2/AVX2 by default, and one written once through
+      # simd/archsimd when the experiment is on. The second is the one this machine cannot execute -- the developer
+      # machine is arm64 -- so it is held to the same reference implementation and contract tests here.
+      - name: vet
+        run: GOEXPERIMENT=simd go vet ./...
+      - name: unit, scenario and example tests (race)
+        run: GOEXPERIMENT=simd go test -race -count=1 ./...
+      - name: the scan still matches its reference byte for byte
+        run: GOEXPERIMENT=simd go test -count=1 -v -run 'ScanStringBody|VectorScan' .
+
   bench:
     name: benchmarks compile and run once
     runs-on: ubuntu-latest

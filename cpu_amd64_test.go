@@ -1,4 +1,4 @@
-//go:build amd64 && !purego
+//go:build !goexperiment.simd && amd64 && !purego
 
 package ason
 

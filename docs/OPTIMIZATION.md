@@ -285,7 +285,23 @@ base64 4758 → 4761 几乎不动，tools 687 → 612。所以下面每条结论
   原因在 `assemble` 的主 `switch p.As` 里只为 `AV128Const` 开了分支，`AV128Load` / `AV128Store` 没有——
   它们只支持编译器内部经 `obj.WasmV128` 类型生成，不支持手写。**所以 wasm 侧仍然只能走字运算版，
   网关收益仍为零**；等哪个版本补上手写 load/store，这条路立刻值得重开。
-- **`simd` / `simd/archsimd` 包对这个用途双重不可用**。第一重是门槛：整包带 `//go:build goexperiment.simd`，
+- **`simd/archsimd`：amd64 能用就用了，arm64 与 wasm 用不了**。先前判"双重不可用"是查错了层——我只看上层
+  `simd.Mask8s`（确实只有 `And/Or/String/ToArch/ToInt8s`），没看底层 `archsimd`。实测的分界线是：
+  **`Mask8x16.ToBits() uint16` / `Mask8x32.ToBits() uint32` 只定义在 `types_amd64.go`**，
+  arm64 的 `Mask8x16` 只有 `And/Not/Or/String`，wasm 只多两个 `AndNot/Xor/ToInt8x16`——
+  三架构编译实测：amd64 通过，arm64 与 wasm 都报 `Mask8x16 has no field or method ToBits`。
+  而"比较→掩码→定位首个命中"里，最后那步正是扫描要的**位置**，没有 `ToBits` 就只能
+  `ToInt8x16` 再 `StoreArray` 逐字节找，比字运算还慢。
+
+  所以 amd64 改用 `archsimd` 写（`scanstring_simd_amd64.go`，在 `goexperiment.simd` 标签下），
+  一份 Go 代码替掉手写的 SSE2 + AVX2 两份汇编：宽度由 `archsimd` 自己按 `cpu.X86.AVX2()` 选，
+  尾部由 `LoadUint8x16Part` 处理，**也不再有"编码写错"的风险**——那正是 `VPBROADCASTB` 从通用寄存器
+  被编成 AVX-512 指令、在只有 AVX2 的机器上 SIGILL 的来源。反汇编确证它真出 `VPCMPEQB Y…` + `VPMOVMSKB Y…`。
+  没开实验开关的调用方仍走手写汇编（`!goexperiment.simd`），行为一致。
+
+  **wasm 上 `archsimd` 是真 v128 而非模拟**（`ops_wasm.go` 由 `wasmgen` 生成，每个方法标注 `Asm: I8x16…`），
+  所以一旦 `Mask8x16` 在 wasm 上补齐 `ToBits`（对应 `I8x16Bitmask` 指令，指令表里本来就有），
+  **网关就能第一次拿到向量收益**——这比等手写 `V128Load` 那条路更近。第一重是门槛：整包带 `//go:build goexperiment.simd`，
   实测不开 GOEXPERIMENT 无法 import；这一重本可绕过——把它写成 `goexperiment.simd` 标签下的可选实现、
   默认仍走手写汇编，就不强制下游做任何事。**真正堵死的是第二重：API 取不出位置**。
   `simd.Uint8s` 有 `LoadUint8s` / `BroadcastUint8s` / `Equal` / `Min` / `Or`，比较与加载都齐全，

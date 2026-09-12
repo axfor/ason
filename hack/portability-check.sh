@@ -55,5 +55,46 @@ for lvl in v1 v2 v3 v4; do
   fi
 done
 
+# With GOEXPERIMENT=simd, amd64 takes the simd/archsimd implementation instead of the hand-written pair, and every
+# other target must be unaffected. Both halves matter: that the experiment builds at all, and that it changes only
+# the one architecture that can use it (arm64 and wasm have no ToBits on their masks, so they keep their own).
+for t in $targets; do
+  os=${t%/*}
+  arch=${t#*/}
+  if ! err=$(GOEXPERIMENT=simd GOOS=$os GOARCH=$arch go build ./... 2>&1); then
+    echo "!! $t does not build with GOEXPERIMENT=simd: $err"
+    fail=1
+    continue
+  fi
+  sel=$(GOEXPERIMENT=simd GOOS=$os GOARCH=$arch go list -f '{{join .GoFiles " "}}' . | tr ' ' '\n' | grep '^scanstring_' | tr '\n' ' ')
+  case "$arch" in
+    arm64) want="scanstring_neon_arm64.go " ;;
+    amd64) want="scanstring_simd_amd64.go " ;;
+    *)     want="scanstring_generic.go " ;;
+  esac
+  if [ "$sel" != "$want" ]; then
+    echo "!! $t with GOEXPERIMENT=simd selected [$sel], expected [$want]"
+    fail=1
+  fi
+done
+
+# The two switches together, which is the combination a build tag is most likely to get wrong: with the experiment
+# on and purego asked for, every architecture must still land on the generic scan. Leaving !purego off the simd
+# implementation compiles fine in every other configuration and only collides here.
+for t in $targets; do
+  os=${t%/*}
+  arch=${t#*/}
+  if ! err=$(GOEXPERIMENT=simd GOOS=$os GOARCH=$arch go build -tags purego ./... 2>&1); then
+    echo "!! $t does not build with GOEXPERIMENT=simd and -tags purego: $err"
+    fail=1
+    continue
+  fi
+  sel=$(GOEXPERIMENT=simd GOOS=$os GOARCH=$arch go list -tags purego -f '{{join .GoFiles " "}}' . | tr ' ' '\n' | grep '^scanstring_' | tr '\n' ' ')
+  if [ "$sel" != "scanstring_generic.go " ]; then
+    echo "!! $t with GOEXPERIMENT=simd and -tags purego selected [$sel], expected the generic scan"
+    fail=1
+  fi
+done
+
 [ "$fail" = 0 ] && echo "portability: $(echo $targets | wc -w | tr -d ' ') targets build and select correctly, with and without purego, across GOAMD64 v1-v4"
 exit $fail

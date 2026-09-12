@@ -11,6 +11,8 @@
 set -e
 out=$(mktemp /tmp/ason-enc-XXXXXX.test)
 trap 'rm -f "$out"' EXIT
+# The default build, which is the one carrying hand-written assembly. Under GOEXPERIMENT=simd this package has none
+# on amd64 -- simd/archsimd emits the instructions instead, and choosing a legal encoding is then its problem.
 GOOS=linux GOARCH=amd64 go test -c -o "$out" . >/dev/null
 
 syms=$(go tool nm "$out" | awk '$2 == "T" || $2 == "t" {print $3}' | grep '^github\.com/axfor/ason\.' | grep '\.abi0$' | sed 's#^github\.com/axfor/ason\.##; s#\.abi0$##' | sort -u)
