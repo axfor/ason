@@ -50,3 +50,36 @@ func TestAVX2PathMatchesReference(t *testing.T) {
 		t.Fatalf("clean 100KB string: got %d want %d", got, want)
 	}
 }
+
+// The AVX2 function called directly, not through the dispatch, so that its instructions are executed on any machine
+// that reports AVX2 rather than only when some other test happens to feed a long enough string. The first version of
+// this file built its constants with VPBROADCASTB from a general register, which is an AVX-512 encoding: on a runner
+// with AVX2 and no AVX-512 the first instruction of the function was illegal, and it was an unrelated test that
+// happened to reach it. A direct call makes that coverage deliberate.
+func TestAVX2FunctionExecutesWhenAvailable(t *testing.T) {
+	if !hasAVX2 {
+		t.Skip("no usable AVX2 on this machine; the SSE2 path is covered by the shared contract test")
+	}
+	for _, n := range []int{32, 64, 129, 1000, 70000} {
+		p := append([]byte(nil), bytes.Repeat([]byte("z"), n)...)
+		p = append(p, '"')
+		if got, want := scanStringBodyAVX2(p, 0), n; got != want {
+			t.Fatalf("n=%d: AVX2 scan stopped at %d, want the quote at %d", n, got, want)
+		}
+		for pos := 0; pos < n; pos++ {
+			q := append([]byte(nil), p...)
+			q[pos] = '\\'
+			if got := scanStringBodyAVX2(q, 0); got > pos {
+				t.Fatalf("n=%d pos=%d: overshot to %d", n, pos, got)
+			}
+			if pos < 32 && n >= 32 {
+				if got := scanStringBodyAVX2(q, 0); got != pos {
+					t.Fatalf("n=%d pos=%d: got %d want %d", n, pos, got, pos)
+				}
+			}
+			if pos > 64 {
+				break // enough positions per length; the contract test covers the rest exhaustively
+			}
+		}
+	}
+}

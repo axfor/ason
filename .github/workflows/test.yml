@@ -9,6 +9,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # 1.24 is the floor go.mod declares; stable is whatever is current. Both matter: the assembler's encoding
+        # choices differ between releases -- VPBROADCASTB from a general register became an AVX-512 encoding, which
+        # SIGILLed on a runner with only AVX2 -- and only the stable job caught it.
         go: ["1.24", "stable"]
     steps:
       - uses: actions/checkout@v4
@@ -52,6 +55,12 @@ jobs:
       # XGETBV, and "detected at start" is only a tested claim if the log says which branch ran.
       - name: which vector path this machine takes
         run: go test -count=1 -v -run 'AVX2' .
+      # A static guard for the mistake CI caught once: VPBROADCASTB from a general register is AVX-512BW, the
+      # assembler encodes it with an EVEX prefix, and the detection only promises AVX2 -- so a machine with AVX2 and
+      # no AVX-512 took SIGILL on the first instruction of the function. This finds such an encoding on any host,
+      # including the arm64 developer machine that does not compile the file at all.
+      - name: no AVX-512 encodings in the amd64 assembly
+        run: sh hack/encoding-check.sh
 
   bench:
     name: benchmarks compile and run once
