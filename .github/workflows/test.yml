@@ -63,6 +63,12 @@ jobs:
       # including the arm64 developer machine that does not compile the file at all.
       - name: no AVX-512 encodings in the amd64 assembly
         run: sh hack/encoding-check.sh
+      # Every architecture builds, and each selects the implementation it should: NEON on arm64, SSE2 on amd64,
+      # the word-at-a-time loop everywhere else, and that same loop everywhere under -tags purego. Also all four
+      # GOAMD64 levels, because the AVX2 choice is made at run time and must not depend on what the toolchain was
+      # told to assume. This is the check that says the assembly stays an accelerator rather than a requirement.
+      - name: every architecture builds and selects the right scan
+        run: sh hack/portability-check.sh
 
   bench:
     name: benchmarks compile and run once
