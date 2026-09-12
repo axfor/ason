@@ -303,10 +303,18 @@ func (t *Transformer) SetDupKeys(DupKeys)
    而代价是一个公开 API 加 80 个字段的逐字段正确性责任，跨流残留在压测里表现为偶发输出漂移，最难查。
    设计记录留在 ACGCluster 的 `designs/ason-Reset-设计.md`，若将来有"单 worker 上万并发流"这类形态再取用。
 
-6. **零拷贝 key**（降级）：key 与其周围空白不跨块时，`kvRaw` 直接切片输入缓冲，跨块才拷贝。
+6. **已放弃（内联路线）· 让短串不付函数调用**：真实请求体字符串平均 5.6 字节，`scanStringBody` 的 8 字节 SWAR 主循环
+   对 68% 的串根本进不去，却要付一次真实函数调用（实测 `cannot inline scanStringBody: cost 106 exceeds budget 80`）。
+   试过把它拆成"可内联的短串头 + 独立 SWAR 尾"：第一版头部反而涨到 **132**（两个循环加位判断），
+   压到极简单循环后仍是 **104**——而 SWAR 版 106、UTF8 版 114，三者都落在 104–114。
+   结论是**编译器约束而非写法问题**：Go 的内联成本模型里，一个循环加每次迭代三次比较就吃掉大部分预算，
+   "逐字节判三种终止符"的函数天生超预算。这条路与边界检查那条同理，不可达。
+   尚未否决的变体是"由调用点判剩余长度、短串走调用点内的极小循环"（不依赖内联），待实测吞吐后再定。
+
+7. **零拷贝 key**（降级）：key 与其周围空白不跨块时，`kvRaw` 直接切片输入缓冲，跨块才拷贝。
    原本排在前面，理由是"派发帧密集的输入分配减半"；但写穿之后每请求只剩 15 次分配 / 71KB，
    而上面那份 profile 里与 `kvRaw` 有关的项一个都没进前 12。先做 SWAR，这一项等有证据再提。
-7. **wasm 基准进 CI**：`GOOS=wasip1 GOARCH=wasm go test -c`，用 wazero 运行 `-test.bench`，把目标环境的数字放进 README。
+8. **wasm 基准进 CI**：`GOOS=wasip1 GOARCH=wasm go test -c`，用 wazero 运行 `-test.bench`，把目标环境的数字放进 README。
 
 验收：`bench_test.go` 三类输入的数字进 README；任何一项不能让黄金差分产生变化。
 
