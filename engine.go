@@ -331,6 +331,7 @@ func (t *Transformer) CommitNow() {
 		return
 	}
 	t.committed = true
+	t.syncFlushRun()
 	if t.sink != nil {
 		t.drain(t.lastChunk)
 	}
@@ -404,7 +405,7 @@ func (t *Transformer) Aligned() bool {
 	if !t.regOpen || t.regT != rtOut || len(t.regSuf) > 0 || t.valSub != nil {
 		return false
 	}
-	if t.w.vlen > 0 || len(t.w.buf) > 0 {
+	if t.w.vlen > t.w.vfrom || len(t.w.buf) > 0 {
 		return false // produced but not yet taken
 	}
 	for i := range t.w.frames {
@@ -440,13 +441,24 @@ func (t *Transformer) Unsupported() (bool, string) {
 func (t *Transformer) SetOutBuffer(b []byte) {
 	t.w.buf = b[:0]
 	t.w.fixed = true
+	t.syncFlushRun() // everything handed over points into this buffer: nothing is written through past it
 }
 
 // SetSink sets an output receiver. Once set, output produced past the commit point in each Write / Finish goes straight to the
 // sink and the output buffer is reused instead of handed over: no allocation per chunk, and a stream no longer produces as much
 // garbage as it has input. Meant for callers that consume immediately (writing to a host or a connection). The sink must consume b before returning; b is invalid afterwards.
 // With a sink set Out() always returns nothing. Must be called before the first Write.
-func (t *Transformer) SetSink(sink func(b []byte)) { t.sink = sink }
+func (t *Transformer) SetSink(sink func(b []byte)) { t.sink = sink; t.syncFlushRun() }
+
+// syncFlushRun turns the writer's write-through on once there is a sink to take the bytes and the commit point is
+// past: before it, the pass-through run is the retreat the caller can still fall back on, so it stays held.
+func (t *Transformer) syncFlushRun() {
+	if t.sink != nil && t.committed && !t.w.fixed {
+		t.w.flushRun = t.sink
+		return
+	}
+	t.w.flushRun = nil
+}
 
 // Suspend, called from a protocol callback during Write, stops the scan at the next byte boundary: the callback finishes, the
 // rest of the chunk is kept, and Write returns with Suspended true. The protocol may then write to the output from outside
@@ -534,9 +546,9 @@ func (t *Transformer) drain(chunk int) {
 		return
 	}
 	if t.w.virt {
-		if t.w.vlen > 0 {
-			t.sink(t.w.vp[:t.w.vlen])
-			t.w.vlen = 0
+		if t.w.vlen > t.w.vfrom {
+			t.sink(t.w.vp[t.w.vfrom:t.w.vlen])
+			t.w.vfrom = t.w.vlen
 		}
 		t.handBack()
 		return
@@ -564,7 +576,7 @@ func (t *Transformer) Out() []byte {
 		return nil
 	}
 	if t.w.virt { // never materialised: the output is a slice of the caller's chunk
-		b := t.w.vp[:t.w.vlen]
+		b := t.w.vp[t.w.vfrom:t.w.vlen]
 		t.w.release() // handed over: keeping the chunk here would pin it until the next Write
 		return b
 	}
@@ -599,7 +611,13 @@ func (t *Transformer) Write(p []byte) {
 	t.w.startChunk(p)
 	t.scanned += len(p)
 	t.lastChunk = len(p)
-	t.w.hint = len(p) // size for the first real write; a chunk that stays virtual never allocates at all
+	// Size for the first real write; a chunk that stays virtual never allocates at all. With a sink the output does
+	// not wait for the caller to take it, so the buffer never has to hold more than the commit window: a whole body
+	// delivered in one piece used to size it by itself and allocate a megabyte to rewrite a field name.
+	t.w.hint = len(p)
+	if t.sink != nil && t.w.hint > t.commitBytes() {
+		t.w.hint = t.commitBytes()
+	}
 	n := t.scan(p)
 	if t.suspendReq {
 		t.suspendReq = false
@@ -617,6 +635,7 @@ func (t *Transformer) Write(p []byte) {
 		}
 		if t.scanned >= t.commitBytes() {
 			t.committed = true
+			t.syncFlushRun()
 		}
 	}
 	if t.sink != nil {
@@ -659,6 +678,7 @@ func (t *Transformer) Finish() []byte {
 	t.w.pop(t.rootCloseWs)
 	t.w.buf = append(t.w.buf, t.tailWs...) // whitespace after the root (a trailing newline) is kept
 	t.committed = true
+	t.syncFlushRun()
 	if t.sink != nil {
 		t.drain(0)
 		t.w.release()
@@ -1444,8 +1464,27 @@ func (t *Transformer) beginRegion(target regionTarget, act *Action) {
 }
 
 // emitRegion handles one run of raw bytes inside a region.
-// emitRegionAt handles p[from:to] inside a region; the offset lets the writer keep the pass-through run virtual.
+// emitRegionAt handles p[from:to] inside a region, committing at the window if the run crosses it.
 func (t *Transformer) emitRegionAt(p []byte, from, to int) {
+	// The commit window is a count of bytes scanned, so a run that crosses it is split there: what is still inside
+	// the window is held as before, and everything past it is released like any other committed output. Without the
+	// split a chunk larger than the window -- a whole body delivered in one piece -- is held whole, which both
+	// breaks the ceiling the window promises and makes the writer copy the chunk into a buffer its own size.
+	if t.sink != nil && !t.committed && t.replaying == 0 {
+		if room := t.commitBytes() - (int(t.scanBase) + from); room < to-from {
+			if room > 0 {
+				t.emitRun(p, from, from+room)
+				from += room
+			}
+			t.committed = true
+			t.syncFlushRun()
+		}
+	}
+	t.emitRun(p, from, to)
+}
+
+// emitRun hands p[from:to] to the region's target; the offset lets the writer keep the pass-through run virtual.
+func (t *Transformer) emitRun(p []byte, from, to int) {
 	if t.regT == rtOut && len(t.regSuf) == 0 {
 		t.w.passthroughAt(p, from, to)
 		return
@@ -1725,10 +1764,15 @@ func (t *Transformer) replayKV(kv DeferredKV) {
 	}
 	f.ph = phValue
 	t.replaying++
+	// The replayed bytes are not the chunk the writer is counting through: their offsets are not comparable with it
+	// and they live in a buffer that is reused, so nothing of them is handed over as a view.
+	through := t.w.flushRun
+	t.w.flushRun = nil
 	t.scan(kv.Raw)
 	if t.st == sInScalar {
 		t.scan([]byte{' '}) // a separator to terminate a scalar
 	}
+	t.w.flushRun = through
 	t.replaying--
 	t.wsRaw = t.wsRaw[:0] // the padding space above is not part of the original
 }
