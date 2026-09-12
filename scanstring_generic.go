@@ -1,4 +1,4 @@
-//go:build (!arm64 && !amd64) || purego
+//go:build (!arm64 && !amd64 && (!wasm || !goexperiment.simd)) || purego
 
 package ason
 

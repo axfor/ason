@@ -44,13 +44,18 @@ The scanner validates JSON with the same rejection surface as `encoding/json` (s
 grammar, escapes, control characters, whitespace), byte by byte, with constant state — inside pass-through
 regions as well as in dispatched frames, which the fuzz targets assert in both directions. String bodies are
 scanned eight bytes at a time, and sixteen once a string turns out to be a long one: past 128 bytes the scan hands
-the rest to a vector loop, written in assembly because Go emits no vector instructions of its own -- NEON on arm64,
-SSE2 on amd64 (SSE2 rather than AVX2, which would need a runtime feature test and a dependency to make it).
-Through a sink, a 1MB body on arm64: long strings and base64 payloads at roughly **12 GB/s** per core (15 with a
-buffer pool), nested content parts at roughly 0.83 GB/s, dense tool definitions at roughly 0.68 GB/s. Where there
-is no vector scan -- `GOOS=wasip1`, whose toolchain emits none, or the `purego` build tag -- long strings come to
-roughly 4.8 GB/s and every other figure is within noise of the vector build, because what it accelerates is long
-values and nothing else.
+the rest to a vector loop. By default that loop is assembly -- NEON on arm64, SSE2 on amd64, with AVX2 chosen at
+run time from CPUID when the CPU and OS both allow it. Built with `GOEXPERIMENT=simd`, the same scan comes from
+`simd/archsimd` instead, on arm64 and amd64 and also on wasm, which has no assembly path at all.
+Through a sink, a 1MB body on arm64 with the default build: long strings at roughly **11.6 GB/s** per core and
+base64 at 10.9 (11.7 and 12.0 with a buffer pool), nested content parts at roughly 0.75 GB/s, dense tool
+definitions at roughly 0.60 GB/s. With `GOEXPERIMENT=simd` the long values go further -- **14.8** and 12.9 (15.5
+and 15.4 pooled) -- and the two structural shapes stay where they are, within noise. wasm gains the most in
+relative terms, having had no vector scan at all before Go 1.27: long strings go from 2.36 to **5.56 GB/s** and
+base64 from 2.26 to 5.52, against a measured 4-6% cost on the structural shapes. Where there is no vector scan --
+the `purego` build tag, or a wasm build without the experiment -- long strings come to roughly 4.8 GB/s on arm64,
+and every other figure is within noise of the vector build, because what it accelerates is long values and
+nothing else.
 
 Per-transformer options: `SetCommitBytes` (commit window), `SetBudget` (cap on everything the engine may hold
 for one document; `Buffered()` reports it), `SetRoot` (`RootObject` by default, `RootArray`, or `RootAny` —

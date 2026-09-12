@@ -69,7 +69,13 @@ jobs:
       # told to assume. This is the check that says the assembly stays an accelerator rather than a requirement.
       - name: every architecture builds and selects the right scan
         run: sh hack/portability-check.sh
-
+      # arm64 has two implementations too: hand-written NEON by default, and the same scan through simd/archsimd
+      # when the experiment is on. The second reaches VCMHI and VUMINV, which the assembler does not expose, so it
+      # is a different instruction sequence and needs its own run.
+      - name: the same scan through simd/archsimd
+        run: GOEXPERIMENT=simd go test -race -count=1 .
+      - name: and it still matches the reference byte for byte
+        run: GOEXPERIMENT=simd go test -count=1 -v -run 'ScanStringBody|VectorScan' .
   simd:
     name: amd64 through simd/archsimd (GOEXPERIMENT=simd)
     runs-on: ubuntu-latest
@@ -87,6 +93,29 @@ jobs:
         run: GOEXPERIMENT=simd go test -race -count=1 ./...
       - name: the scan still matches its reference byte for byte
         run: GOEXPERIMENT=simd go test -count=1 -v -run 'ScanStringBody|VectorScan' .
+
+  wasm:
+    name: wasm through simd/archsimd, executed under node
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "stable"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      # Until Go 1.27 the wasm target emitted no vector instructions at all, so this scan did not exist here. It
+      # does now, and this is the shape a gateway plugin runs, which makes executing it worth more than compiling
+      # it: js/wasm runs under node through the wrapper Go ships, where wasip1 would need a wasi runtime.
+      - name: the scan matches its reference under wasm, with vectors
+        run: GOEXPERIMENT=simd GOOS=js GOARCH=wasm go test -count=1 -exec="$(go env GOROOT)/lib/wasm/go_js_wasm_exec" -v -run 'ScanStringBody|VectorScan' .
+      - name: and without the experiment, where it falls back to the word-at-a-time scan
+        run: GOOS=js GOARCH=wasm go test -count=1 -exec="$(go env GOROOT)/lib/wasm/go_js_wasm_exec" -run 'ScanStringBody' .
+      - name: the target a gateway actually builds still builds, both ways
+        run: |
+          GOEXPERIMENT=simd GOOS=wasip1 GOARCH=wasm go build ./...
+          GOOS=wasip1 GOARCH=wasm go build ./...
 
   bench:
     name: benchmarks compile and run once

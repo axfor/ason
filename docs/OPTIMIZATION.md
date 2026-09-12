@@ -283,34 +283,67 @@ base64 4758 → 4761 几乎不动，tools 687 → 612。所以下面每条结论
   某条指令带着未设置的 `Reg` 走进了 `case AGet`。最小对照坐实了范围：只用 I64 的函数正常，
   只加一条 `V128Load` 就崩，而不带内存操作数的 `I8x16Splat` / `I8x16Bitmask` 可以手写。
   原因在 `assemble` 的主 `switch p.As` 里只为 `AV128Const` 开了分支，`AV128Load` / `AV128Store` 没有——
-  它们只支持编译器内部经 `obj.WasmV128` 类型生成，不支持手写。**所以 wasm 侧仍然只能走字运算版，
-  网关收益仍为零**；等哪个版本补上手写 load/store，这条路立刻值得重开。
-- **`simd/archsimd`：amd64 能用就用了，arm64 与 wasm 用不了**。先前判"双重不可用"是查错了层——我只看上层
-  `simd.Mask8s`（确实只有 `And/Or/String/ToArch/ToInt8s`），没看底层 `archsimd`。实测的分界线是：
-  **`Mask8x16.ToBits() uint16` / `Mask8x32.ToBits() uint32` 只定义在 `types_amd64.go`**，
-  arm64 的 `Mask8x16` 只有 `And/Not/Or/String`，wasm 只多两个 `AndNot/Xor/ToInt8x16`——
-  三架构编译实测：amd64 通过，arm64 与 wasm 都报 `Mask8x16 has no field or method ToBits`。
-  而"比较→掩码→定位首个命中"里，最后那步正是扫描要的**位置**，没有 `ToBits` 就只能
-  `ToInt8x16` 再 `StoreArray` 逐字节找，比字运算还慢。
+  它们只支持编译器内部经 `obj.WasmV128` 类型生成，不支持手写。**但这条路不必再等了**——编译器内部生成正是
+  `simd/archsimd` 走的路，见下一条：wasm 的向量化已经拿到了，只是不经由手写汇编。
+- **`simd/archsimd`：三个架构全都用上了**。这条结论我改过两次，两次都是查错了层次，记下来以免再犯。
+  第一次判"双重不可用"，是只看了上层 `simd.Mask8s`（确实只有 `And/Or/String/ToArch/ToInt8s`），没看底层 `archsimd`。
+  第二次改成"amd64 能用、arm64 与 wasm 用不了"，依据是 **`Mask8x16.ToBits()` 只定义在 `types_amd64.go`**——
+  这个事实没错，**但由它推出的"比较无法变成位置"是错的**：`ToBits` 只是取位置的一种手段，不是唯一手段。
+  实际三条路各不相同，都验证到了指令一级：
 
-  所以 amd64 改用 `archsimd` 写（`scanstring_simd_amd64.go`，在 `goexperiment.simd` 标签下），
-  一份 Go 代码替掉手写的 SSE2 + AVX2 两份汇编：宽度由 `archsimd` 自己按 `cpu.X86.AVX2()` 选，
-  尾部由 `LoadUint8x16Part` 处理，**也不再有"编码写错"的风险**——那正是 `VPBROADCASTB` 从通用寄存器
-  被编成 AVX-512 指令、在只有 AVX2 的机器上 SIGILL 的来源。反汇编确证它真出 `VPCMPEQB Y…` + `VPMOVMSKB Y…`。
-  没开实验开关的调用方仍走手写汇编（`!goexperiment.simd`），行为一致。
+  | 架构 | 比较 | 取首个命中的位置 | 实测指令 |
+  | --- | --- | --- | --- |
+  | amd64 | `Equal` / `Less` on `Uint8x32` | `Mask8x32.ToBits()` + `TrailingZeros32` | `VPCMPEQB Y…` `VPOR Y…` `VPMOVMSKB Y…`，EVEX 计数 0 |
+  | arm64 | 同上 on `Uint8x16` | `IfElse` 把命中处换成车道号，`ReduceMin()` 取最小 | `VCMEQ` ×2 `VCMHI` `VORR` ×2 `VBIF` `VUMINV` |
+  | wasm | 同上 on `Uint8x16` | `ToInt8x16().ToBits().StoreArray()` 后读两个 `uint64` + `TrailingZeros64>>3` | `V128Load` `I8x16Splat` ×3 `I8x16Eq` ×2 `I8x16LtU` `V128Or` ×2 `V128Store` |
 
-  **wasm 上 `archsimd` 是真 v128 而非模拟**（`ops_wasm.go` 由 `wasmgen` 生成，每个方法标注 `Asm: I8x16…`），
-  所以一旦 `Mask8x16` 在 wasm 上补齐 `ToBits`（对应 `I8x16Bitmask` 指令，指令表里本来就有），
-  **网关就能第一次拿到向量收益**——这比等手写 `V128Load` 那条路更近。第一重是门槛：整包带 `//go:build goexperiment.simd`，
-  实测不开 GOEXPERIMENT 无法 import；这一重本可绕过——把它写成 `goexperiment.simd` 标签下的可选实现、
-  默认仍走手写汇编，就不强制下游做任何事。**真正堵死的是第二重：API 取不出位置**。
-  `simd.Uint8s` 有 `LoadUint8s` / `BroadcastUint8s` / `Equal` / `Min` / `Or`，比较与加载都齐全，
-  但比较的结果 `Mask8s` 只有 `And` / `Or` / `String` / `ToArch` / `ToInt8s` 五个方法——
-  **没有 bitmask 提取、没有 trailing-zeros、没有 FirstTrue**。而扫描要的正是"这 16/32 字节里第一个终止符的下标"，
-  用现有 API 只能 `ToInt8s()` 再 `Store` 回切片逐字节找，比字运算还慢，完全违背目的。
-  此外它在 wasm 上走 `ops_emulated_wasm.go`（纯 Go 模拟，零处 `v128`），对网关本就没有收益。
-  **等 Mask 类型补上位置提取，这条路才值得重估**——届时一份代码就能覆盖 NEON / AVX2 / AVX-512 并自动处理探测。
-- **`archsimd` 的 CPU 探测依赖 `internal/cpu`**，外部模块碰不到，所以自写的 `cpuid` / `xgetbv` 仍是必需。
+  **三者的硬件门槛完全不同，这是 `archsimd` 最容易踩的地方**：包本身**不做任何运行时回退**，`doc.go` 只写
+  "It is recommended to check for CPU features before using the corresponding vector operations"。实测标注：
+
+  - **amd64 的门槛是 AVX2 一刀切**，而且**"退到 16 字节"根本不是退路**——`Uint8x32.Equal` 与 `Mask8x32.ToBits`
+    要 AVX2 不奇怪，但 `Uint8x16.Less` 与 `BroadcastUint8x16` 也都标着 `Emulated, CPU Feature: AVX2`。
+    所以这份实现的下限**比它替换掉的手写 SSE2 更高**——SSE2 是 amd64 基线、无需探测，那正是当初选它的理由。
+    实现里必须自己用 `archsimd.X86.AVX2()` 把关，无 AVX2 时返回、交还字运算循环；想在这类机器上要向量，
+    就别开实验、走手写那一份。**这一条我差点漏掉**：CI 的 runner 都带 AVX2，恰好测不出来，
+    和当初 `VPBROADCASTB` 那次 SIGILL 的暴露路径一模一样。
+  - **arm64 不需要检查**：用到的算子全标 `CPU Feature: NEON`，而 NEON 是 arm64 基线。
+  - **wasm 没有 CPU Feature 标注**，只有 `Asm: I8x16Eq` 这类——因为 v128 是**模块级**特性：
+    运行时若不支持 SIMD 提案，是整个 `.wasm` 加载失败，而不是某条指令崩。
+    **对网关这是比性能更硬的前提**：Envoy 的 wasm 运行时必须支持 SIMD 提案，这个要先确认再谈收益。
+
+  **arm64 这条尤其值得记**：手写汇编时我受限于 Go 汇编器的 arm64 指令集——**没有 `VCMHI`**（无符号大于），
+  所以 `c < 0x20` 只能 `VUSHR $5` 后与零比较；**没有 `VUMINV`**，所以取位置只能用魔数掩码 + 两次 `VMOV` 车道读 + `RBIT`/`CLZ`。
+  经 `archsimd` 走编译器内建，这两条指令直接就有了。**"用不了才自己写"在 arm64 上的正确读法是：其实用得了，而且比手写的短。**
+
+  **wasm 是收益最大的一条，因为网关跑的就是这个形状**。此前记的"wasm 走 `ops_emulated_wasm.go`（纯 Go 模拟，零处 `v128`）"
+  是错的：`ops_wasm.go` 才是主实现，方法体为空（编译器内建），`-gcflags=-S` 的完整输出里能数出上表那些 v128 指令；
+  `ops_emulated_wasm.go` 只有 212 行、集中在 `Uint64x2` 一类没有原生指令的操作上。正确性也不是只靠编译——
+  `GOOS=js GOARCH=wasm` 配 Go 自带的 `lib/wasm/go_js_wasm_exec` 在 node 下**真实执行**，扫描与参考实现逐字节对拍通过。
+
+  **实测收益（go1.27.1，benchstat，count=10）**。arm64 是"手写 NEON 对 archsimd"，wasm 是"字运算对 v128"：
+
+  | 形态（1MB，整块） | arm64 NEON | arm64 archsimd | wasm SWAR | wasm v128 |
+  |---|---|---|---|---|
+  | longstring | 11.56 GB/s | **14.80** | 2.36 GB/s | **5.56** |
+  | base64 | 10.93 | **12.91** | 2.26 | **5.52** |
+  | longstring 池化 | 11.72 | **15.50** | — | — |
+  | base64 池化 | 12.00 | **15.38** | — | — |
+  | parts | 0.75 | 0.74（无显著差异） | 0.25 | 0.24（+3.97% 更慢） |
+  | tools | 0.60 | 0.60（无显著差异） | 0.20 | 0.20（+4.06% 更慢） |
+
+  arm64 全矩阵 35 项：显著变快 27、显著变慢 1（`MatrixPooled/tools` +1.48%）、无显著差异 7，geomean −9.95%；
+  **分配完全一致**（B/op 与 allocs/op 全部 p=1.000）。wasm geomean −30.62%，代价是结构密集形状慢 4~6%。
+  两者都换来了长值形状的大幅提升，且都没有引入分配。
+
+  **但网关今天还兑现不了**：`GOEXPERIMENT=simd` 要 Go 1.27，而插件是 `go 1.24.1` / `toolchain go1.24.4`，
+  构建镜像是 `wasm-go-builder:go1.24.0`。收益是真的，前提是 higress 的构建工具链升到 1.27，这是一个明确的、
+  可以单独推进的事项，不能含糊成"已经拿到"。
+
+  三份实现都在 `goexperiment.simd` 标签下，没开实验的调用方行为完全不变：amd64 走手写 SSE2/AVX2、arm64 走手写 NEON、
+  wasm 走字运算版。`-tags purego` 则把所有架构都放回字运算版。
+- **`archsimd` 的 CPU 探测依赖 `internal/cpu`**（`archsimd/cpu.go` 直接 `import "internal/cpu"`）——它自己身在标准库，
+  用得了；外部模块碰不到。所以自写的 `cpuid` / `xgetbv` **只在"未开实验的 amd64"这一种组合下才必需**：
+  `go list` 实测，`cpu_amd64.go` / `cpu_amd64.s` 在 amd64 默认构建下参与，在 `GOEXPERIMENT=simd` 与 `-tags purego` 下都不参与。
 
 ## M3 · v0.4 —— 性能上限
 
