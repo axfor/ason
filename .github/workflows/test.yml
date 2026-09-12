@@ -48,6 +48,10 @@ jobs:
         run: go test -race -count=1 ./...
       - name: wasip1 build
         run: GOOS=wasip1 GOARCH=wasm go build ./...
+      # What this runner turned out to have, in the log: the vector scan picks AVX2 or SSE2 at start from CPUID and
+      # XGETBV, and "detected at start" is only a tested claim if the log says which branch ran.
+      - name: which vector path this machine takes
+        run: go test -count=1 -v -run 'AVX2' .
 
   bench:
     name: benchmarks compile and run once

@@ -345,7 +345,10 @@ func (t *Transformer) SetDupKeys(DupKeys)
    引用 `internal/cpu`，替代是引入 `golang.org/x/sys/cpu`（毁掉刚兑现的零依赖）或自写 CPUID 汇编；SSE2 是 amd64
    基线、无需探测，先拿这份确定的收益。AVX2 的 32 字节版留待以后，并记下它的代价。
 
-   **wasm 拿不到这份收益**：Go 编译到 `wasip1` 不生成 SIMD（`runtime` 里零处 SIMD），所以网关侧仍走字运算版。
+   **wasm 拿不到这份收益，而且这条路根本不存在**（三重否证，不是"Go 暂不自动向量化"那么轻）：
+   `cmd/internal/obj/wasm` 的指令表共 **209 条、零处 `v128` / `i8x16` / SIMD**，全是 i32/i64 标量——
+   连"手写 wasm SIMD 汇编"都无法表达；`GOWASM` 的合法值只有 `satconv` 与 `signext`，没有 SIMD 开关；
+   编译器的 Wasm SSA 规则与 `obj/wasm` 里也搜不到任何 SIMD 痕迹。网关侧因此只能走字运算版。
    分流是 `//go:build arm64 && !purego` / `amd64 && !purego` / `(!arm64 && !amd64) || purego`，用
    `go list -f '{{.GoFiles}}'` 逐目标验过（arm64→NEON、amd64→SSE2、wasip1→generic 且无 `.s`），
    `purego` 标签下两种架构都回到字运算版且数字回到基线。
@@ -359,10 +362,22 @@ func (t *Transformer) SetDupKeys(DupKeys)
    （`scanstring_neon_arm64_test.go`：可以停早、但绝不能越过首个终止符、不能在还剩满 16 字节时停、不能返回非终止符位置），
    三类终止符 × 长度 0–80 × 每位置 × 每起点，加两万条随机输入。
 
-9. **零拷贝 key**（降级）：key 与其周围空白不跨块时，`kvRaw` 直接切片输入缓冲，跨块才拷贝。
+9. **已放弃 · 字运算循环两路展开（为 wasm 而试）**：wasm 侧拿不到任何向量指令（汇编器 209 条指令零处 SIMD，
+   `GOWASM` 只有 `satconv` / `signext`，编译器 SSA 规则里也搜不到），所以唯一的加宽手段是把 i64 SWAR 手工展开成
+   两路、16 字节一迭代，给机器两条独立依赖链。
+   长值上确实有效：`purego` 口径（代表 wasm）base64 整块 4736 → 5320（+12.3%）、单串 1MB +11.7%。
+   但**真实语料稳定为负**：密集 tools 三个版本分别 −0.6% / −2.9% / −2.5% / −3.7%，短串 −1.2~1.9%，
+   嵌套内容块含向量档 −3.7~4.8%——因为两路循环要求剩余 ≥16 字节，5.6 字节的串进不去却要多付一次边界判断，
+   循环体更大也抬高了寄存器压力。加 64 字节闸门后更糟：`base64 整块 +12.7%` 与**同形态池化 −13.5%** 自相矛盾，
+   说明这一档在 2000 次 × 5 轮下的噪声带就比我在读的差异大。
+   **否决理由**：稳定收益只在"单串上兆"这类极端长值（真实请求体里仅 base64 图片一种形态），代价是所有真实语料档
+   稳定 −1~4%；而 wasm 那 +12% 对网关不转化——v97 同轮已证明引擎不是网关瓶颈（1MB 档每请求 20ms CPU 里扫描只占
+   一小部分）。回退，保留单路。
+
+10. **零拷贝 key**（降级）：key 与其周围空白不跨块时，`kvRaw` 直接切片输入缓冲，跨块才拷贝。
    原本排在前面，理由是"派发帧密集的输入分配减半"；但写穿之后每请求只剩 15 次分配 / 71KB，
    而上面那份 profile 里与 `kvRaw` 有关的项一个都没进前 12。先做 SWAR，这一项等有证据再提。
-10. **wasm 基准进 CI**：`GOOS=wasip1 GOARCH=wasm go test -c`，用 wazero 运行 `-test.bench`，把目标环境的数字放进 README。
+11. **wasm 基准进 CI**：`GOOS=wasip1 GOARCH=wasm go test -c`，用 wazero 运行 `-test.bench`，把目标环境的数字放进 README。
 
 验收：`bench_test.go` 三类输入的数字进 README；任何一项不能让黄金差分产生变化。
 
