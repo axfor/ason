@@ -20,6 +20,10 @@ jobs:
           go-version: ${{ matrix.go }}
       - name: gofmt
         run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+      # Before the tests, not after: when a test fails the later steps are skipped, and this line is exactly what is
+      # needed to read such a failure -- it says whether the machine took the AVX2 path or the SSE2 one.
+      - name: which vector path this machine takes
+        run: go test -count=1 -v -run 'AVX2DetectionIsVisible' .
       - name: vet
         run: go vet ./...
       - name: unit, scenario and example tests (race)
@@ -53,8 +57,6 @@ jobs:
         run: GOOS=wasip1 GOARCH=wasm go build ./...
       # What this runner turned out to have, in the log: the vector scan picks AVX2 or SSE2 at start from CPUID and
       # XGETBV, and "detected at start" is only a tested claim if the log says which branch ran.
-      - name: which vector path this machine takes
-        run: go test -count=1 -v -run 'AVX2' .
       # A static guard for the mistake CI caught once: VPBROADCASTB from a general register is AVX-512BW, the
       # assembler encodes it with an EVEX prefix, and the detection only promises AVX2 -- so a machine with AVX2 and
       # no AVX-512 took SIGILL on the first instruction of the function. This finds such an encoding on any host,

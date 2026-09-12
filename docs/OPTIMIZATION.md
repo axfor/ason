@@ -285,9 +285,15 @@ base64 4758 → 4761 几乎不动，tools 687 → 612。所以下面每条结论
   原因在 `assemble` 的主 `switch p.As` 里只为 `AV128Const` 开了分支，`AV128Load` / `AV128Store` 没有——
   它们只支持编译器内部经 `obj.WasmV128` 类型生成，不支持手写。**所以 wasm 侧仍然只能走字运算版，
   网关收益仍为零**；等哪个版本补上手写 load/store，这条路立刻值得重开。
-- **`simd` / `simd/archsimd` 包不能用**：整包带 `//go:build goexperiment.simd`，实测不开 GOEXPERIMENT
-  无法 import，**一个库不能要求下游用特殊环境变量构建**。而且它在 wasm 上走 `ops_emulated_wasm.go`
-  （纯 Go 模拟，零处 `v128`），对网关本就没有收益。
+- **`simd` / `simd/archsimd` 包对这个用途双重不可用**。第一重是门槛：整包带 `//go:build goexperiment.simd`，
+  实测不开 GOEXPERIMENT 无法 import；这一重本可绕过——把它写成 `goexperiment.simd` 标签下的可选实现、
+  默认仍走手写汇编，就不强制下游做任何事。**真正堵死的是第二重：API 取不出位置**。
+  `simd.Uint8s` 有 `LoadUint8s` / `BroadcastUint8s` / `Equal` / `Min` / `Or`，比较与加载都齐全，
+  但比较的结果 `Mask8s` 只有 `And` / `Or` / `String` / `ToArch` / `ToInt8s` 五个方法——
+  **没有 bitmask 提取、没有 trailing-zeros、没有 FirstTrue**。而扫描要的正是"这 16/32 字节里第一个终止符的下标"，
+  用现有 API 只能 `ToInt8s()` 再 `Store` 回切片逐字节找，比字运算还慢，完全违背目的。
+  此外它在 wasm 上走 `ops_emulated_wasm.go`（纯 Go 模拟，零处 `v128`），对网关本就没有收益。
+  **等 Mask 类型补上位置提取，这条路才值得重估**——届时一份代码就能覆盖 NEON / AVX2 / AVX-512 并自动处理探测。
 - **`archsimd` 的 CPU 探测依赖 `internal/cpu`**，外部模块碰不到，所以自写的 `cpuid` / `xgetbv` 仍是必需。
 
 ## M3 · v0.4 —— 性能上限
