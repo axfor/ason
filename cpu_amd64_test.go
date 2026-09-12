@@ -63,19 +63,32 @@ func TestAVX2FunctionExecutesWhenAvailable(t *testing.T) {
 	for _, n := range []int{32, 64, 129, 1000, 70000} {
 		p := append([]byte(nil), bytes.Repeat([]byte("z"), n)...)
 		p = append(p, '"')
-		if got, want := scanStringBodyAVX2(p, 0), n; got != want {
-			t.Fatalf("n=%d: AVX2 scan stopped at %d, want the quote at %d", n, got, want)
+		// The wide scan steps 32 bytes at a time and returns where it stopped when fewer than 32 remain, so it lands
+		// exactly on the quote only when the content is a multiple of 32. Otherwise it must stop short of it, never
+		// past it, and the caller's narrower loops finish the tail.
+		got := scanStringBodyAVX2(p, 0)
+		switch {
+		case got > n:
+			t.Fatalf("n=%d: overshot the quote, stopped at %d", n, got)
+		case n%32 == 0 && got != n:
+			t.Fatalf("n=%d (a whole number of vectors): stopped at %d, want the quote at %d", n, got, n)
+		case n-got >= 32:
+			t.Fatalf("n=%d: stopped at %d with %d bytes still to scan, which is a full vector or more", n, got, n-got)
 		}
 		for pos := 0; pos < n; pos++ {
 			q := append([]byte(nil), p...)
 			q[pos] = '\\'
-			if got := scanStringBodyAVX2(q, 0); got > pos {
-				t.Fatalf("n=%d pos=%d: overshot to %d", n, pos, got)
+			got := scanStringBodyAVX2(q, 0)
+			if got > pos {
+				t.Fatalf("n=%d pos=%d: overshot the terminator, stopped at %d", n, pos, got)
 			}
-			if pos < 32 && n >= 32 {
-				if got := scanStringBodyAVX2(q, 0); got != pos {
-					t.Fatalf("n=%d pos=%d: got %d want %d", n, pos, got, pos)
-				}
+			// A terminator inside the first vector must be found exactly; past that the scan may stop at a vector
+			// boundary before it, as long as it did not leave a whole vector unscanned.
+			if pos < 32 && n >= 32 && got != pos {
+				t.Fatalf("n=%d pos=%d: got %d want %d", n, pos, got, pos)
+			}
+			if pos-got >= 32 {
+				t.Fatalf("n=%d pos=%d: stopped at %d, leaving a full vector before the terminator", n, pos, got)
 			}
 			if pos > 64 {
 				break // enough positions per length; the contract test covers the rest exhaustively
