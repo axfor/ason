@@ -98,3 +98,17 @@ func BenchmarkNumbers(b *testing.B) {
 	b.Run("single-digit", func(b *testing.B) { benchShape(b, numbersBody(9000)) })
 	b.Run("wide", func(b *testing.B) { benchShape(b, wideNumbersBody(5000)) })
 }
+
+// oneStringBody is a document whose whole cost is a single string of the given length: it isolates where a vector
+// scan starts to beat the word-at-a-time one, which a mixed corpus cannot show.
+func oneStringBody(n int) []byte {
+	return []byte(`{"k":"` + strings.Repeat("x", n) + `"}`)
+}
+
+// Lengths across the range that matters: below the vector width, around it, and up to where base64 payloads live.
+func BenchmarkStringLen(b *testing.B) {
+	for _, n := range []int{8, 16, 32, 64, 128, 256, 1024, 4096, 65536, 1 << 20} {
+		in := oneStringBody(n)
+		b.Run(fmt.Sprintf("n=%d", n), func(b *testing.B) { benchShape(b, in) })
+	}
+}

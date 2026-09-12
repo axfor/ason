@@ -34,6 +34,33 @@ jobs:
           done
       - name: wasip1 build
         run: GOOS=wasip1 GOARCH=wasm go build ./...
+  arm64:
+    name: arm64 (the architecture the benchmarks are taken on)
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "stable"
+      - name: vet
+        run: go vet ./...
+      - name: unit, scenario and example tests (race)
+        run: go test -race -count=1 ./...
+      - name: wasip1 build
+        run: GOOS=wasip1 GOARCH=wasm go build ./...
+
+  bench:
+    name: benchmarks compile and run once
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "stable"
+      # One iteration each: this guards against a benchmark that no longer builds or panics, which is how a
+      # measurement harness rots. The numbers from a shared runner are not comparable, so none are recorded.
+      - run: go test -run='^$' -bench=. -benchtime=1x ./...
+
   fuzz:
     name: native fuzz (short)
     runs-on: ubuntu-latest

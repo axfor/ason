@@ -410,6 +410,12 @@ func (l *litState) done() bool {
 	return l.n == len(l.word(l.first))
 }
 
+// vectorStringMin is how far the word-at-a-time loop gets through a string before handing the rest to the vector
+// scan. Measured per string length on arm64: the vector scan loses below 128 bytes (-19% at 8, -5% at 64) and wins
+// above it (+4% at 128, +10% at 4KB, +32% at 64KB, +129% at 1MB), so the handover is placed at 128 bytes of this
+// string -- not of the chunk, which says nothing about where the closing quote is.
+const vectorStringMin = 128
+
 // scanStringBody skips the plain bytes of a string starting at p[i:] and returns the index of the first byte that needs
 // handling (`"`, `\\` or a control character < 0x20), or len(p) when there is none.
 // SWAR over 8 bytes at a time: strings / base64 make up the bulk of large requests, so this is the scanner's hottest path.
@@ -419,6 +425,7 @@ func scanStringBody(p []byte, i int) int {
 	const qq = lo * '"'
 	const bb = lo * '\\'
 	const sp = lo * 0x20
+	start := i
 	for i+8 <= len(p) {
 		x := binary.LittleEndian.Uint64(p[i:])
 		xq := x ^ qq
@@ -429,6 +436,16 @@ func scanStringBody(p []byte, i int) int {
 			return i + bits.TrailingZeros64(m)>>3
 		}
 		i += 8
+		if vectorStringScan && i-start >= vectorStringMin {
+			// Still going after this many bytes, so this is a long value -- a base64 payload, a long message -- and
+			// the vector scan takes over for the rest of it: sixteen bytes a step instead of eight, measured at +32%
+			// at 64KB and +129% at a megabyte. The length of the string is not known on entry (only how much of the
+			// chunk is left, which says nothing about where the closing quote is), and a body's strings average six
+			// bytes, so the word loop above is what decides: a short value never reaches this, and a long one pays
+			// these few words once. It returns where it stopped when fewer than sixteen bytes remain.
+			i = scanStringBodyVec(p, i)
+			break
+		}
 	}
 	for i < len(p) {
 		c := p[i]

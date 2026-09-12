@@ -43,9 +43,12 @@ that keeps the original bytes until then can fall back to another strategy when 
 The scanner validates JSON with the same rejection surface as `encoding/json` (structure, literals, number
 grammar, escapes, control characters, whitespace), byte by byte, with constant state — inside pass-through
 regions as well as in dispatched frames, which the fuzz targets assert in both directions. String bodies are
-scanned eight bytes at a time. Through a sink, a 1MB body: long strings and base64 payloads at roughly
-4.8 GB/s per core, nested content parts at roughly 0.84 GB/s, dense tool definitions at roughly 0.69 GB/s,
-with 12 to 18 allocations per megabyte regardless of how many keys the document has.
+scanned eight bytes at a time, and sixteen on arm64, where the scan of a long string is written in NEON. Through
+a sink, a 1MB body on arm64: long strings and base64 payloads at roughly **12 GB/s** per core (15 with a buffer
+pool), nested content parts at roughly 0.83 GB/s, dense tool definitions at roughly 0.68 GB/s. Elsewhere -- amd64
+today, and `GOOS=wasip1` where the toolchain emits no vector instructions at all -- the same scan runs eight bytes
+at a time and long strings come to roughly 4.8 GB/s; every other figure is within noise of the arm64 one, because
+what the vector scan accelerates is long values and nothing else.
 
 Per-transformer options: `SetCommitBytes` (commit window), `SetBudget` (cap on everything the engine may hold
 for one document; `Buffered()` reports it), `SetRoot` (`RootObject` by default, `RootArray`, or `RootAny` —
