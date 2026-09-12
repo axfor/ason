@@ -75,8 +75,8 @@ Dispatch frames and regions are held to the same standard.
   semantics.
 
 Checking uses constant state and buffers nothing. String bodies are scanned eight bytes at a time with SWAR
-tests for the quote, the backslash and control characters; long strings and base64 run at about 2.5 GB/s on
-one core of an Apple-silicon laptop with 4KB chunks.
+tests for the quote, the backslash and control characters; long strings and base64 run at about 4.8 GB/s on
+one core of an Apple-silicon laptop, whether the 1MB body arrives in 16KB chunks or in one piece.
 
 ## Types the caller's own decoder would have checked
 

@@ -43,9 +43,9 @@ that keeps the original bytes until then can fall back to another strategy when 
 The scanner validates JSON with the same rejection surface as `encoding/json` (structure, literals, number
 grammar, escapes, control characters, whitespace), byte by byte, with constant state — inside pass-through
 regions as well as in dispatched frames, which the fuzz targets assert in both directions. String bodies are
-scanned eight bytes at a time; long strings and base64 payloads stream at roughly 2.5 GB/s per core, a
-realistic 1MB chat body at roughly 1.6 GB/s, dense structure at roughly 420 MB/s, with a few hundred
-allocations per megabyte regardless of how many keys the document has.
+scanned eight bytes at a time. Through a sink, a 1MB body: long strings and base64 payloads at roughly
+4.8 GB/s per core, nested content parts at roughly 0.8 GB/s, dense tool definitions at roughly 0.65 GB/s,
+with 12 to 18 allocations per megabyte regardless of how many keys the document has.
 
 Per-transformer options: `SetCommitBytes` (commit window), `SetBudget` (cap on everything the engine may hold
 for one document; `Buffered()` reports it), `SetRoot` (`RootObject` by default, `RootArray`, or `RootAny` —
@@ -57,9 +57,11 @@ unmarshalled into cannot hold — derived from that struct with `FieldTypesOf` /
 shares one key intern cache across transformers, and `SetOutBuffer` builds the output in a buffer the caller
 owns.
 
-`SetSink(func([]byte))` hands committed output to a callback at the end of each `Write` instead of returning
-it from `Out()`, and reuses the output buffer afterwards: a 1MB stream in 16KB chunks allocates 17 times and
-168KB in total instead of 77 times and 1.2MB, at about 4.2 GB/s instead of 2.7. Use it when the output is
+`SetSink(func([]byte))` hands committed output to a callback instead of returning it from `Out()`, and reuses
+the output buffer afterwards: a 1MB stream in 16KB chunks allocates 17 times and 154KB in total instead of 77
+times and 1.2MB. Past the commit point the bytes that are only passing through are not copied at all -- a run
+large enough to be worth a hand-over goes to the sink as a view of the input -- so the same body delivered in
+one piece, as a proxy usually gets it, allocates 70KB rather than its own size. Use it when the output is
 consumed immediately (written to a host or a connection); the slice is only valid inside the callback.
 
 When the transformer stops, `Err()` returns an `*Error` with a `Code` (`ErrSyntax`, `ErrIncomplete`, `ErrRoot`,
