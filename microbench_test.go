@@ -64,3 +64,37 @@ func BenchmarkStructural(b *testing.B) {
 	in := structuralBody(12000)
 	b.Run("nesting", func(b *testing.B) { benchShape(b, in) })
 }
+
+// numbersBody is what a tool schema's arrays of small integers look like: the scalar path runs its whole DFA for a
+// single digit, once per element, and the profile shows that adding up in a document made mostly of them.
+func numbersBody(n int) []byte {
+	var b strings.Builder
+	b.WriteString(`{"model":"m","rows":[`)
+	for i := 0; i < n; i++ {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteString(`{"v":[1,2,3,4,5,6,7,8],"w":[0,9,1,8,2,7]}`)
+	}
+	b.WriteString(`]}`)
+	return []byte(b.String())
+}
+
+// Wide numbers for contrast: the same element count, values that actually exercise the DFA's states.
+func wideNumbersBody(n int) []byte {
+	var b strings.Builder
+	b.WriteString(`{"model":"m","rows":[`)
+	for i := 0; i < n; i++ {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteString(`{"v":[-1.5e10,12345678,0.125,-9876.5,1e-7,42,3.14159,-0.0],"w":[100000,2500,7,80,9000,1]}`)
+	}
+	b.WriteString(`]}`)
+	return []byte(b.String())
+}
+
+func BenchmarkNumbers(b *testing.B) {
+	b.Run("single-digit", func(b *testing.B) { benchShape(b, numbersBody(9000)) })
+	b.Run("wide", func(b *testing.B) { benchShape(b, wideNumbersBody(5000)) })
+}

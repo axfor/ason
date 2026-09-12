@@ -78,3 +78,81 @@ func TestScanRejectsControlCharactersAtEveryBoundary(t *testing.T) {
 		}
 	}
 }
+
+// Numbers inside a region are the densest value a request body has -- a schema's arrays of small integers -- and the
+// scanner has a fast path for the common shape (a digit followed immediately by a structural character). These assert
+// the fast path cannot differ from the state machine: the same documents at every chunk size, digits against each
+// closing byte, numbers the grammar must reject, and numbers nested deeper than the region's own level.
+func TestRegionNumbersAreScannedIdentically(t *testing.T) {
+	docs := []string{
+		`{"v":[1,2,3,4,5,6,7,8,9,0]}`,
+		`{"v":[1],"w":{"x":2},"y":3}`,
+		`{"v":[[1,2],[3,[4,5]],{"a":[6]}]}`,
+		`{"v":[0,-1,1.5,-0.25,1e3,1E-3,-1.5e+10,12345678901234567890]}`,
+		`{"v":[1 , 2 ,3	,4]}`, // whitespace around the closing byte, including a tab
+		`{"a":1}`,
+		`{"a":-0}`,
+	}
+	for n, in := range docs {
+		for _, cs := range []int{1, 2, 3, 7, 64, len(in)} {
+			if cs > len(in) {
+				cs = len(in)
+			}
+			got, ok, why := feedAll(NewTransformer(BaseProtocol{}), in, cs)
+			if !ok {
+				t.Fatalf("doc %d chunk=%d rejected: %s", n, cs, why)
+			}
+			if got != in {
+				t.Fatalf("doc %d chunk=%d: %q != %q", n, cs, got, in)
+			}
+			sunk, ok2, why2 := feedSink(NewTransformer(BaseProtocol{}), in, cs)
+			if !ok2 || sunk != in {
+				t.Fatalf("doc %d chunk=%d sink: %s / %q", n, cs, why2, sunk)
+			}
+		}
+	}
+}
+
+// The numbers the grammar rejects must stay rejected, at every chunk boundary: a fast path that accepts a digit
+// without looking at what follows would let these through.
+func TestRegionRejectsBadNumbers(t *testing.T) {
+	bad := []string{
+		`{"v":[01]}`, `{"v":[1.]}`, `{"v":[.5]}`, `{"v":[-]}`, `{"v":[1e]}`, `{"v":[1e+]}`,
+		`{"v":[--1]}`, `{"v":[1..2]}`, `{"v":[0x1]}`, `{"v":[1 2]}`, `{"v":[+1]}`, `{"v":[1,]}`,
+	}
+	for _, in := range bad {
+		for cs := 1; cs <= len(in); cs++ {
+			if _, ok, _ := feedAll(NewTransformer(BaseProtocol{}), in, cs); ok {
+				t.Fatalf("%q accepted at chunk=%d", in, cs)
+			}
+		}
+	}
+}
+
+// The fast path may only finish a number whose closing byte is in the same chunk. These place a digit at the very end
+// of a chunk, so the byte that ends it arrives in the next one and the state machine has to carry the value across.
+func TestRegionNumbersSplitAtEveryBoundary(t *testing.T) {
+	docs := []string{
+		`{"v":[1,2,3],"w":4}`,
+		`{"v":[1,22,333,4444],"w":{"x":[5,6]}}`,
+		`{"v":[0,1,0,9],"w":-1}`,
+		`{"v":[1.5,2,3e4,5],"w":[6,7.25]}`,
+	}
+	for n, in := range docs {
+		// Every single split point, so each number in turn is the last byte of a chunk.
+		for cut := 1; cut < len(in); cut++ {
+			tr := NewTransformer(BaseProtocol{})
+			var sb strings.Builder
+			tr.SetSink(func(b []byte) { sb.Write(b) })
+			tr.Write([]byte(in[:cut]))
+			tr.Write([]byte(in[cut:]))
+			tr.Finish()
+			if bad, why := tr.Unsupported(); bad {
+				t.Fatalf("doc %d cut=%d rejected: %s", n, cut, why)
+			}
+			if sb.String() != in {
+				t.Fatalf("doc %d cut=%d: %q != %q", n, cut, sb.String(), in)
+			}
+		}
+	}
+}
