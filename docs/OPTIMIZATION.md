@@ -339,9 +339,20 @@ func (t *Transformer) SetDupKeys(DupKeys)
    池化驱动下 4733 → **15059**（+218%）与 4377 → **15112**（+245%）。短档零代价：64 字节及以下在噪声内，
    密集 tools +4.8%、嵌套内容块 +6.2%、短串 len=6 +0.4%。
 
-   **wasm 拿不到这份收益**：Go 编译到 `wasip1` 不生成 SIMD（`runtime` 里零处 SIMD），所以网关侧仍走 SWAR——
-   `//go:build arm64 && !purego` 分流，amd64 / wasip1 / purego 一律用字运算版，且 `purego` 标签下数字回到基线。
-   amd64 的 AVX2 版（32 字节一步）是同一手法的延伸，尚未做。
+   **amd64 走 SSE2，同宽 16 字节，但写法更简单**：`PMOVMSKB` 直接把每个字节的最高位收成一个 bit，位索引就是字节
+   索引，不需要 NEON 那套魔数；控制字符用 `PMINUB` 与 `0x1F` 取最小值后再 `PCMPEQB` 比对（相等即 `c <= 0x1F`），
+   这样绕开 `PCMPGTB` 把 0x80 以上当负数的符号问题。**只用 SSE2、不做 AVX2**：AVX2 要运行时探测，而外部模块不能
+   引用 `internal/cpu`，替代是引入 `golang.org/x/sys/cpu`（毁掉刚兑现的零依赖）或自写 CPUID 汇编；SSE2 是 amd64
+   基线、无需探测，先拿这份确定的收益。AVX2 的 32 字节版留待以后，并记下它的代价。
+
+   **wasm 拿不到这份收益**：Go 编译到 `wasip1` 不生成 SIMD（`runtime` 里零处 SIMD），所以网关侧仍走字运算版。
+   分流是 `//go:build arm64 && !purego` / `amd64 && !purego` / `(!arm64 && !amd64) || purego`，用
+   `go list -f '{{.GoFiles}}'` 逐目标验过（arm64→NEON、amd64→SSE2、wasip1→generic 且无 `.s`），
+   `purego` 标签下两种架构都回到字运算版且数字回到基线。
+
+   **SSE2 版的验证边界要写明**：开发机是 arm64，**SSE2 的逻辑没有在本机执行过**——只验证了能汇编、能编出 amd64
+   测试二进制、分流选择正确。它的正确性由 CI 的 amd64 job 兑现（`ubuntu-latest` 跑 `go test -race ./...`，
+   其中包含逐字节参考实现对照与"加速器契约"穷举测试，两者已改为架构中立、两边共用）。
 
    等价性靠两套穷举钉住：一个逐字节的参考实现（`scanstring_test.go`），以及汇编契约测试
    （`scanstring_neon_arm64_test.go`：可以停早、但绝不能越过首个终止符、不能在还剩满 16 字节时停、不能返回非终止符位置），
