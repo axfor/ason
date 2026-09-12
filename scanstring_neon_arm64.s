@@ -1,3 +1,5 @@
+//go:build !purego
+
 #include "textflag.h"
 
 // func scanStringBodyNEON(p []byte, i int) int

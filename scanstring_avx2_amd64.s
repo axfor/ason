@@ -1,3 +1,5 @@
+//go:build !goexperiment.simd && !purego
+
 #include "textflag.h"
 
 // func scanStringBodyAVX2(p []byte, i int) int

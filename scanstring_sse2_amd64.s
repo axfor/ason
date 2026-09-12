@@ -1,3 +1,5 @@
+//go:build !goexperiment.simd && !purego
+
 #include "textflag.h"
 
 // func scanStringBodySSE2(p []byte, i int) int
