@@ -65,7 +65,8 @@ shape costs **7 allocations and 1,256 bytes**, whether it arrives in 16KB chunks
 
 Past the commit point the bytes that are only passing through are not copied at all -- a run
 large enough to be worth a hand-over goes to the sink as a view of the input -- so the same body delivered in
-one piece, as a proxy usually gets it, allocates 70KB rather than its own size. Use it when the output is
+one piece, as a proxy usually gets it, is never copied into a buffer of its own size: without a pool it costs
+the commit window once (70KB), and with one it costs the 1,256 bytes above. Use it when the output is
 consumed immediately (written to a host or a connection); the slice is only valid inside the callback.
 
 When the transformer stops, `Err()` returns an `*Error` with a `Code` (`ErrSyntax`, `ErrIncomplete`, `ErrRoot`,
