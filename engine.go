@@ -864,12 +864,15 @@ scan:
 				continue
 			}
 			i = j
-			if p[i] < 0x20 {
-				t.BailCode(ErrSyntax, "control character in string")
-				continue
-			}
-			if p[i] == '\\' {
-				t.esc = true
+			// The scan stops at one of three bytes, and for a document of short strings the common one by far is the
+			// closing quote -- one per string, where the other two are an escape or a syntax error. Testing for it
+			// first spends one comparison per string instead of two.
+			if c = p[i]; c != '"' {
+				if c < 0x20 {
+					t.BailCode(ErrSyntax, "control character in string")
+					continue
+				}
+				t.esc = true // c == '\\'
 				i++
 				continue
 			}
@@ -998,10 +1001,10 @@ scan:
 				ph := t.regPh
 				for i < len(p) {
 					c = p[i]
-					if jsonSpace[c] {
-						i++
-						continue
-					}
+					// No whitespace test before the switch: a request body has a structural character every few bytes
+					// and, being machine-generated, usually no whitespace at all, so the table lookup was paid on
+					// every one of them for nothing. Whitespace is a byte the switch does not name, so it is handled
+					// in the default branch, which costs a document that does have whitespace one extra jump.
 					switch c {
 					case '"':
 						if ph = regAfterStr[ph]; ph == rErr {
@@ -1053,6 +1056,10 @@ scan:
 						}
 						ph = rOValue
 					default:
+						if jsonSpace[c] {
+							i++
+							continue
+						}
 						if ph = regAfterVal[ph]; ph == rErr {
 							t.BailCode(ErrSyntax, "unexpected literal")
 							continue scan
