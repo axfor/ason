@@ -4,7 +4,8 @@ package ason
 
 // scanStringBodySSE2 scans 16 bytes at a time and returns the index of the first `"`, `\` or control character, or
 // the index it stopped at when fewer than 16 bytes remain -- the caller finishes those. In assembly because Go
-// emits no vector instructions of its own; SSE2 needs no feature test, so `purego` is the only way to opt out.
+// emits none of its own without GOEXPERIMENT=simd, which selects the archsimd version instead. SSE2 needs no
+// feature test -- unlike that version, whose floor is AVX2 -- so `purego` is the only way to opt out here.
 //
 //go:noescape
 func scanStringBodySSE2(p []byte, i int) int

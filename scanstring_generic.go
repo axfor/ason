@@ -2,7 +2,7 @@
 
 package ason
 
-// No vector scan on this build -- wasip1 among them, where the toolchain emits no SIMD at all -- so the
+// No vector scan on this build -- the purego tag, or an architecture with no implementation -- so the
 // word-at-a-time loop is the whole implementation and scanStringBodyVec is never called.
 const vectorStringScan = false
 

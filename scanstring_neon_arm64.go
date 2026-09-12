@@ -4,7 +4,8 @@ package ason
 
 // scanStringBodyNEON scans 16 bytes at a time and returns the index of the first `"`, `\` or control character, or
 // the index it stopped at when fewer than 16 bytes remain -- the caller finishes those. Implemented in assembly
-// because Go emits no vector instructions of its own; `purego` and every other architecture keep the SWAR loop.
+// because Go emits none of its own without GOEXPERIMENT=simd, which selects the archsimd version instead;
+// `purego` and every other architecture keep the SWAR loop.
 //
 //go:noescape
 func scanStringBodyNEON(p []byte, i int) int
