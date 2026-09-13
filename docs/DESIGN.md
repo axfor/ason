@@ -2,14 +2,20 @@
 
 ## Where the code is
 
-    ason          the public surface: type aliases and forwards, nothing else (ason.go)
-    ason/engine   the scanner, the Transformer and everything that reads its state
+    ason            the public surface: type aliases and forwards (ason.go)
+    ason/engine     the scanner, the Transformer and everything that reads its state
     ason/fieldtree  reflection over a caller's struct, used to decide what a value may be
-    ason/simd     the vector scan, preferring simd/archsimd and hand-writing only what it cannot
+    ason/simd       the vector scan, preferring simd/archsimd and hand-writing only what it cannot
 
 The split follows one rule: a package boundary goes where the state does not cross it. The engine's four largest
 files read and write the Transformer's private fields 576 times between them, so they are one package; the field
 tree and the vector scan answer questions of their own and are separate.
+
+Two test files sit beside ason.go rather than with the engine, each because it has to. doc_example_test.go holds
+the Example functions, and godoc renders an Example only next to the package it illustrates -- these illustrate the
+public API, so they belong to the package that publishes it. examples_golden_test.go builds every program under
+examples/ and compares its output byte for byte; it walks examples/*/main.go by relative path, so it tests the
+repository from its root rather than any one package.
 
 
 ## The problem

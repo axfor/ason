@@ -1,290 +1,448 @@
 # ason
 
-**A streaming JSON transformation framework for Go.** ason rewrites a JSON document *while it is still
-arriving*: feed it byte chunks of any size, read the transformed output as it becomes available. Memory does
-not depend on the document size — a protocol decides, key by key, what to forward, drop, rename, move, wrap,
-capture or rewrite, and only the parts it explicitly asks to hold are buffered, each with an upper bound.
+**Streaming JSON transformation for Go.** ason rewrites a JSON document while it is still arriving: feed it
+chunks of any size and take the transformed output as soon as it is ready, without ever loading the whole
+document into memory.
 
-Bytes the transform does not touch are forwarded verbatim — whitespace, key order and escapes included — so
-an in-place rewrite is byte-identical to an `sjson`-style edit; bytes it does touch are produced without ever
-materialising the document. There is no dependency outside the standard library and it builds for
-`GOOS=wasip1 GOARCH=wasm`.
+- **Streaming.** Memory does not grow with the document. Only the values a protocol explicitly asks to hold are
+  buffered, and each has an upper bound.
+- **Byte-faithful.** Bytes the transform does not touch come out exactly as they went in — whitespace, key order
+  and escapes included. An in-place rewrite is byte-identical to an `sjson` edit.
+- **Strict.** Input is validated byte by byte with the same rejection rules as `encoding/json`, checked by fuzzing
+  in both directions.
+- **Safe to fall back.** No output is released during the first 64KB of input, so a caller can still switch
+  strategy when a document turns out to be unsupported.
+- **Small footprint.** Standard library only; builds for `GOOS=wasip1 GOARCH=wasm`.
 
-```
+**Contents:** [Install](#install) · [Quick start](#quick-start) · [How it works](#how-it-works) ·
+[Configuration](#configuration) · [Errors](#errors) · [Architecture](#architecture) · [Examples](#examples) ·
+[Testing](#testing)
+
+## Install
+
+```sh
 go get github.com/axfor/ason
 ```
 
-## How it works
+Requires Go 1.27 or later.
 
-One document, four chunks: the engine scans, your hooks decide, the engine moves the bytes.
+## Quick start
+
+A **protocol** is a set of callbacks. Embed `ason.BaseProtocol`, which passes everything through, and override
+only what you need:
+
+```go
+package main
+
+import (
+	"fmt"
+	"os"
+
+	"github.com/axfor/ason"
+)
+
+// tidy renames "model" to "engine" and drops "debug"; everything else passes through untouched.
+type tidy struct{ ason.BaseProtocol }
+
+func (tidy) OnKey(t *ason.Transformer) ason.Action {
+	if t.Depth() == 1 {
+		switch t.Last() {
+		case "model":
+			return ason.Pass().As("engine")
+		case "debug":
+			return ason.Skip()
+		}
+	}
+	return ason.Pass()
+}
+
+func main() {
+	t := ason.NewTransformer(tidy{})
+
+	// Chunks may split anywhere -- here, in the middle of a value and of a key.
+	for _, chunk := range []string{`{"model":"gp`, `t-4o","debug":{"tr`, `ace":1},"stream":true}`} {
+		t.Write([]byte(chunk))
+		os.Stdout.Write(t.Out())
+	}
+	os.Stdout.Write(t.Finish())
+	fmt.Println()
+
+	if err := t.Err(); err != nil {
+		fmt.Fprintln(os.Stderr, "transform failed:", err)
+		os.Exit(1)
+	}
+}
+```
+
+Output:
+
+```json
+{"engine":"gpt-4o","stream":true}
+```
+
+`model` is renamed, `debug` is dropped, and every other byte is copied through unchanged.
+
+`Out()` returns nothing until 64KB of input has been read (the [commit window](#the-commit-window)), so for a
+small document the whole output comes from `Finish()`.
+
+## How it works
 
 ![How the engine and a protocol's hooks transform a document as it streams: the document arrives in four chunks, and inside one pass of the ason engine every field reaches the protocol as a hook call — OnKey answers Pass for model, Skip for debug, Capture for owner, whose value comes back through OnValue where the protocol writes "team":42, and Pass for the 512KB text value. The engine moves the bytes itself according to those answers. Numbered marks show how much output exists once each chunk has been read — chunk 2 carried only the skipped field, so the output did not grow — and the held line stays at zero except for the nine bytes of the captured value, "team/42", which the engine holds only until OnValue takes it.](docs/streaming.svg)
 
-A **protocol** is a set of callbacks. The scanner walks the byte stream and, for every key or array element
-of a container the protocol has *entered*, asks the protocol for an **action**:
+For every key or array element in a container the protocol has *entered*, the engine calls the protocol and
+asks for an **action**. The protocol only decides; the engine moves the bytes. Values the protocol does not ask
+to see stream straight through.
 
-| Action | Effect | Buffering |
+### Actions
+
+| Action | What happens to the value | Held in memory |
 |---|---|---|
-| `Pass` | key + value forwarded verbatim (`As` renames, `Wrap` adds prefix/suffix, `Inner` strips the quotes, `At` writes to an outer output level) | none |
-| `Skip` | dropped | none |
-| `Enter` | descend; children are dispatched too (`Lazy`: omit if nothing is written, `Flat`: no output level, `Lenient`: a scalar becomes `Pass`, `Via(hook)`: route the whole subtree to another Protocol) | none |
-| `Probe` | look at the value type first (string / object / array / null / bool / number), then decide in `OnStart` | none |
-| `Observe(cap)` | `Pass` plus a copy handed to `OnValue` | bounded |
-| `Capture(cap)` | value collected and handed to `OnValue`; the protocol writes the replacement | bounded |
-| `Defer(cap)` | key + value held and re-dispatched when the protocol calls `Release` (a field that arrives before the field that decides its shape) | bounded |
-| `Prefix(cap)` | string: the first `cap` bytes go to `OnPrefix`, which decides how the rest streams (split a `data:` URL, redact, detect a scheme) | window only |
-| `Bail(reason)` / `BailCode(code, reason)` | unsupported: the transformer stops and reports the reason (and a `Code`) | — |
+| `Pass()` | Forwarded unchanged | Nothing |
+| `Skip()` | Dropped | Nothing |
+| `Enter()` | Descend into the object or array; its children are dispatched too | Nothing |
+| `Probe()` | Look at the value's type first, then decide in `OnStart` | Nothing |
+| `Observe(cap)` | Forwarded, and a copy is handed to `OnValue` | Up to `cap` |
+| `Capture(cap)` | Handed to `OnValue`; the protocol writes the replacement | Up to `cap` |
+| `Defer(cap)` | Held, then dispatched again when the protocol calls `Release` | Up to `cap` |
+| `Prefix(cap)` | A string's first `cap` bytes go to `OnPrefix`, which decides how the rest streams | Up to `cap` |
+| `Bail(reason)` | Stop: this document is not supported | — |
 
-The writer builds output **lazily**: a container that never receives a write leaves no trace; a protocol can
-also push its own output levels (`PushObj` / `PushArr` / `Pop`) to move an input container into a nested
-output shape. Output is released only after a **commit point** (`CommitBytes`, 64KB of input), so a caller
-that keeps the original bytes until then can fall back to another strategy when the protocol bails early.
+`BailCode(code, reason)` is `Bail` with an error [code](#errors).
 
-The scanner validates JSON with the same rejection surface as `encoding/json` (structure, literals, number
-grammar, escapes, control characters, whitespace), byte by byte, with constant state — inside pass-through
-regions as well as in dispatched frames, which the fuzz targets assert in both directions. String bodies are
-scanned eight bytes at a time, and sixteen once a string turns out to be a long one: past 128 bytes the scan hands
-the rest to a vector loop. By default that loop is assembly -- NEON on arm64, SSE2 on amd64, with AVX2 chosen at
-run time from CPUID when the CPU and OS both allow it. Built with `GOEXPERIMENT=simd`, the same scan comes from
-`simd/archsimd` instead, on arm64 and amd64 and also on wasm, which has no assembly path at all.
-Through a sink, a 1MB body on arm64 with the default build: long strings at roughly **11.6 GB/s** per core and
-base64 at 10.9 (11.7 and 12.0 with a buffer pool), nested content parts at roughly 0.75 GB/s, dense tool
-definitions at roughly 0.60 GB/s. With `GOEXPERIMENT=simd` the long values go further -- **14.8** and 12.9 (15.5
-and 15.4 pooled) -- and the two structural shapes stay where they are, within noise. wasm gains the most in
-relative terms, having had no vector scan at all before Go 1.27: long strings go from 2.36 to **5.56 GB/s** and
-base64 from 2.26 to 5.52, against a measured 4-6% cost on the structural shapes. Where there is no vector scan --
-the `purego` build tag, or a wasm build without the experiment -- long strings come to roughly 4.8 GB/s on arm64,
-and every other figure is within noise of the vector build, because what it accelerates is long values and
-nothing else.
+### Modifiers
 
-Per-transformer options: `SetCommitBytes` (commit window), `SetBudget` (cap on everything the engine may hold
-for one document; `Buffered()` reports it), `SetRoot` (`RootObject` by default, `RootArray`, or `RootAny` —
-array roots dispatch by index), `SetDupKeys` (`DupKeysPass`, `DupKeysBail`, or `DupKeysFirst` for gjson-style
-first-wins), `SetValidateUTF8` (RFC 3629 validation of strings and keys, off by default like `encoding/json`;
-whole sequences are checked with one table lookup, sequences split across chunks fall back to a byte DFA), and
-`SetFieldTypes` / `SetFieldTree` (reject, while streaming, a value whose type the struct the caller would have
-unmarshalled into cannot hold — derived from that struct with `FieldTypesOf` / `FieldTreeOf`). `SetKeyCache`
-shares one key intern cache across transformers, and `SetOutBuffer` builds the output in a buffer the caller
-owns.
+| Modifier | Applies to | Effect |
+|---|---|---|
+| `.As(name)` | `Pass`, `Enter` | Rename the key |
+| `.Wrap(prefix, suffix)` | `Pass` | Write bytes around the value |
+| `.Inner()` | `Pass` | Write a string's content without its quotes |
+| `.At(level)` | `Pass`, `Enter` | Write to an outer output level |
+| `.Lazy()` | `Enter` | Leave the container out entirely if nothing is written into it |
+| `.Flat()` | `Enter` | Give the container no output level of its own |
+| `.Lenient()` | `Enter` | Treat a value that is not a container as `Pass` instead of bailing |
+| `.Via(hook)` | `Enter` | Hand every callback inside the subtree to another `Protocol` |
 
-`SetSink(func([]byte))` hands committed output to a callback instead of returning it from `Out()`, and reuses
-the output buffer afterwards: a 1MB stream in 16KB chunks allocates 17 times and 154KB in total instead of 77
-times and 1.2MB. Add `SetBufferPool` and a shared `SetKeyCache`, which is how a proxy worker drives it -- its
-streams take turns, so one request's buffer and interned keys are the next one's -- and a 1MB stream of any
-shape costs **7 allocations and 1,256 bytes**, whether it arrives in 16KB chunks or in one piece.
+### Callbacks
 
-Past the commit point the bytes that are only passing through are not copied at all -- a run
-large enough to be worth a hand-over goes to the sink as a view of the input -- so the same body delivered in
-one piece, as a proxy usually gets it, is never copied into a buffer of its own size: without a pool it costs
-the commit window once (70KB), and with one it costs the 1,256 bytes above. Use it when the output is
-consumed immediately (written to a host or a connection); the slice is only valid inside the callback.
+| Callback | Called when |
+|---|---|
+| `OnKey(t)` | A key has been read. `t.Last()` is its name and `t.Depth()` its depth |
+| `OnElem(t)` | An array element starts |
+| `OnStart(t, kind)` | After `Probe`, once the value's type is known |
+| `OnValue(t, raw)` | A `Capture` or `Observe` value is complete |
+| `OnPrefix(t, raw, complete)` | A `Prefix` window is full, or the string ended inside it. Returns the next action and where the rest resumes |
+| `OnLeave(t)` | An entered container closes |
+| `Tail(t)` | The root has closed; add trailing fields here |
 
-When the transformer stops, `Err()` returns an `*Error` with a `Code` (`ErrSyntax`, `ErrIncomplete`, `ErrRoot`,
-`ErrTrailing`, `ErrDuplicateKey`, `ErrLimit`, `ErrLeftoverDefer`, `ErrUnsupported` for a protocol's own `Bail`,
-`ErrMisuse` for an action used where it cannot apply), an English message, the input offset at which it was
-detected, and the path at that point. `Unsupported()` still returns the boolean and a one-line text
-(`unexpected comma at byte 512 in messages[2].content`); callers that need to classify use the code rather
-than the text. Offsets and paths do not depend on how the input was chunked (the one exception is the budget
-check on pre-commit output, which runs at the end of each `Write`).
+Inside a callback, `t.W()` is the output writer: `Key`, `Raw`, `JSONString` and `Int` write output, `PushObj` /
+`PushArr` / `Pop` build output levels the input does not have, and `AppendWith` lets an encoder write straight
+into the output buffer. `raw` is only valid during the callback.
+
+### Driving a transformer
+
+| Call | Purpose |
+|---|---|
+| `NewTransformer(p)` | Create a transformer for one document |
+| `Write(chunk)` | Feed the next chunk; chunks may split anywhere |
+| `Out()` | Take the output that is ready — nothing before the commit point |
+| `Finish()` | End of input: returns the rest of the output |
+| `Err()` | Why the transformer stopped, or `nil` |
+
+## Configuration
+
+Set these before the first `Write`.
+
+| Option | Default | Effect |
+|---|---|---|
+| `SetCommitBytes(n)` | 64KB | Size of the commit window |
+| `SetBudget(n)` | Unlimited | Cap on everything held for one document; `Buffered()` reports the current total |
+| `SetRoot(k)` | `RootObject` | Allowed root: `RootObject`, `RootArray` or `RootAny`. Array roots dispatch by index |
+| `SetDupKeys(d)` | `DupKeysPass` | Duplicate keys: dispatch each (`DupKeysPass`), bail (`DupKeysBail`), or keep only the first (`DupKeysFirst`, as gjson does) |
+| `SetValidateUTF8(on)` | Off | Reject invalid UTF-8 in strings and keys (RFC 3629), including sequences split across chunks |
+| `SetFieldTree(tree)` | Off | Reject values whose type the target struct cannot hold — see [type checking](#type-checking-against-the-target-struct) |
+| `SetKeyCache(c)` | One per transformer | Share the key cache between transformers that run in turn |
+
+### Output
+
+| Mode | How | Use when |
+|---|---|---|
+| Pull | Call `Out()` after each `Write` | The simplest case; the returned slice is yours |
+| Push | `SetSink(func(b []byte))` | Output is consumed immediately, e.g. written to a connection. `b` is only valid inside the call, and `Out()` returns nothing |
+| Pooled | `SetBufferPool(get, put)` | Many streams take turns on one thread and share a few buffers |
+| Caller-owned | `SetOutBuffer(buf)` | Strictly sequential streams reuse one buffer. Never share it between transformers that run concurrently |
+
+## Errors
+
+When a transformer stops, `Err()` returns an `*ason.Error`:
+
+| Field | Meaning |
+|---|---|
+| `Code` | What kind of failure — see below |
+| `Msg` | English message; a protocol's own `Bail` text is kept as is |
+| `Offset` | The input byte at which it was detected |
+| `Path` | Where in the document, e.g. `messages[2].content` |
+
+`Err().Error()` reads like `unexpected comma at byte 512 in messages[2].content`, and `Unsupported()` returns the
+same information as a `(bool, string)` pair. Classify failures by `Code`, never by message text. Offsets and paths do not depend on how the input was chunked, with one exception: the
+budget check on output held before the commit point runs at the end of each `Write`.
+
+| Code | Meaning |
+|---|---|
+| `ErrSyntax` | Not valid JSON: structure, literals, numbers, escapes, control characters, or UTF-8 when validation is on |
+| `ErrIncomplete` | The input ended before the root closed |
+| `ErrRoot` | The root is not a shape `SetRoot` allows |
+| `ErrTrailing` | Something other than whitespace follows the root |
+| `ErrDuplicateKey` | A duplicate key under `DupKeysBail` |
+| `ErrLimit` | A `cap` or the budget was exceeded |
+| `ErrLeftoverDefer` | Deferred items were neither released nor dropped before their container closed |
+| `ErrUnsupported` | The protocol cannot handle this document: its own `Bail`, or an action that met the wrong value type |
+| `ErrMisuse` | The protocol used the API incorrectly, e.g. a nested `Probe` or `Defer` on an array element |
 
 ## Architecture
 
-Three layers, a single pass, no object tree:
-
 ![ason architecture: the scanner reads the input and asks the protocol for an action on every event, bytes travel straight from the scanner to the lazy writer, and the guard holds the output back until the commit point](docs/architecture.svg)
 
-The scanner turns bytes into events and the protocol answers each one with an action — but the bytes never
-travel through the protocol. They go straight from the scanner to the writer, which builds the output lazily;
-the protocol writes only what it replaces or adds. Around all of it, the guard decides how long a decision can
-still be taken back.
+One pass, three layers, no object tree:
+
+- The **scanner** reads the bytes and turns them into events.
+- The **protocol** — your code — answers each event with an action.
+- The **writer** builds the output. Bytes never pass through the protocol: they go straight from the scanner to
+  the writer, and the protocol writes only what it replaces or adds.
+
+Around all three, the **guard** — commit window, budget and bail — decides how long a decision can still be
+taken back.
 
 ### Dispatch frames and regions
 
-Everything else follows from one split. A container the protocol has *entered* is a **dispatch frame**: every
-key and every element inside it becomes a callback. From the first byte of a value whose action is settled to
-its last byte is a **region**: dispatch stops, the scanner only tracks grammar, and the bytes flow to one
-target.
+The engine works in two modes, and the rest of the design follows from that split:
 
-| Region target | Opened by | Where the bytes go |
+- A **dispatch frame** is a container the protocol has entered. Every key and element inside it becomes a
+  callback.
+- A **region** is a value whose action is already decided, from its first byte to its last. Nothing inside it
+  is dispatched: the scanner only checks the grammar and sends the bytes to one destination.
+
+| Region | Opened by | Where the bytes go |
 |---|---|---|
-| out | `Pass` | to the writer — a range of the input chunk, not copied while the run is still contiguous |
-| skip | `Skip` | nowhere |
-| capture | `Capture(cap)` | bounded buffer → `OnValue` |
-| observe | `Observe(cap)` | the writer *and* a bounded buffer → `OnValue` |
-| defer | `Defer(cap)` | bounded hold, re-dispatched on `Release` |
-| prefix | `Prefix(cap)` | window → `OnPrefix`, whose answer picks the target for the rest |
-| validate | `Pass` / `Skip` on a root-level container the field tree has an opinion about | as `Pass` / `Skip`, plus a bounded copy type-checked when the region closes |
+| out | `Pass` | To the writer, as a range of the input chunk — not copied while the run is contiguous |
+| skip | `Skip` | Nowhere |
+| capture | `Capture` | A bounded buffer, then `OnValue` |
+| observe | `Observe` | The writer, plus a bounded buffer for `OnValue` |
+| defer | `Defer` | A bounded hold, dispatched again on `Release` |
+| prefix | `Prefix` | A window for `OnPrefix`, whose answer decides where the rest goes |
+| validate | `Pass` or `Skip` on a root-level container the field tree describes | Same as `Pass` or `Skip`, plus a bounded copy that is type-checked when the value ends |
 
-Inside a region nothing is dispatched, no path segment is pushed, no key is interned: nesting is a counter plus
-a 64-bit bit-stack of container kinds (a slice past 64 levels), so a subtree the protocol never asked about
-costs one range copy and no allocation at all. That is where "memory does not depend on the document" actually
-comes from — a frame exists only where the protocol asked for one, and everything else is a region.
+Inside a region no path is tracked and no key is interned; nesting is only a counter and a bit-stack of
+container kinds. A subtree the protocol never asked about costs a range copy and no allocation. This is why
+memory does not grow with the document: frames exist only where the protocol asked for them.
 
 ### Constant state, whatever the chunking
 
-The whole scanner is three small machines, all fixed size:
+The scanner's whole state is three small, fixed-size machines:
 
-- **byte state** — idle / in-key / in-string / in-scalar, plus the escape flag and the `\u` digit counter;
-- **frame phase** — key → colon → value → comma, one per dispatch frame;
-- **region phase** — nine phases (plus an "invalid" result) that encode the enclosing container kind, so a
-  comma, a colon, a string or a scalar is one table lookup and only a bracket touches the bit-stack.
+- **Byte state** — idle, in a key, in a string, or in a scalar, plus escape tracking.
+- **Frame phase** — key → colon → value → comma, one per dispatch frame.
+- **Region phase** — nine phases that also encode the enclosing container kind, so a comma, colon, string or
+  scalar is a single table lookup.
 
-Nothing in that state knows where a chunk ends, which is the property the chunk-invariance tests assert: the
-same document fed at 1, 3, 7, 64 and 4096 bytes produces the same output, the same errors and the same offsets.
-Keys are interned through a direct-mapped 256-slot cache (a fixed 4KB, whatever the document does), so the
-repeated keys that make up almost every dispatch do not allocate, and a flood of distinct keys cannot grow it.
-`SetKeyCache` shares one cache across transformers — the keys of one document are the keys of the next, so
-after the first one a dispatch allocates nothing at all; a cache belongs to one goroutine at a time.
+None of this depends on where a chunk ends. The same document fed 1, 3, 7, 64 or 4096 bytes at a time produces
+the same output, the same errors and the same offsets, and the tests check exactly that.
+
+Keys are interned in a fixed 256-slot cache, so repeated keys do not allocate and a flood of distinct keys
+cannot grow it. `SetKeyCache` shares one cache across transformers that run in turn (one goroutine at a time),
+so once the first document has been read, dispatching a key allocates nothing.
 
 ### The lazy writer
 
-Entering a container registers an output **level** and writes nothing. The first write inside opens it — and
-every ancestor still unopened — with the separator handled at each level, so protocol code never tracks commas
-or field order. A level never written to materialises as `{}` / `[]` on close, or as nothing at all under
-`Lazy`. `Flat` gives an input container no level of its own, and `PushObj` / `PushArr` / `Pop` let the protocol
-build levels the input does not have; the two together move one input container into a nested output shape.
-`At(level)` writes to an outer level, which works exactly as long as every level above it is still unopened —
-once one is open it is a misuse (`ErrMisuse`), not a quietly misplaced field.
+- Entering a container registers an output **level** but writes nothing.
+- The first write inside opens the level, along with any unopened ancestors, and handles the separators.
+  Protocol code never tracks commas.
+- A level that was never written to becomes `{}` or `[]` when it closes, or nothing at all under `Lazy`.
+- `Flat` gives an input container no level of its own, and `PushObj` / `PushArr` / `Pop` build levels the input
+  does not have. Together they move one input container into a nested output shape.
+- `At(level)` writes to an outer level. That works only while every level above it is still unopened;
+  otherwise it fails with `ErrMisuse` instead of misplacing the field.
 
 ### Byte fidelity
 
-Whitespace is not skipped, it is parked: before the root, inside the raw key run (`[ws]"key"[ws]:[ws]`), before
-an array element, between a value and its comma (parked on the output level, written with the next separator),
-before a closing bracket, and after the root. A `Pass` region is a byte range. Together that is "untouched bytes
-stay untouched", the property the format tests check byte for byte against an `sjson` in-place rewrite.
+Whitespace is kept, not skipped: before the root, around each key and colon, before array elements, between a
+value and its comma, before closing brackets, and after the root. A `Pass` region is a plain byte range.
+Together these keep untouched bytes untouched, which the tests check byte for byte against `sjson` in-place
+rewrites.
 
 ### Zero-copy output
 
-While a chunk is still one unbroken pass-through run the writer copies nothing — it extends a length into the
-caller's chunk, and `Out()` hands back a slice of that chunk. The first byte that is not a straight
-pass-through materialises the run and the writer returns to a real buffer. `Out()` then hands over the buffer's
-ownership instead of copying it, so the pre-commit buffer becomes garbage immediately rather than being held
-for the life of the stream. `SetOutBuffer` gives the transformer a caller-owned buffer to build in (one buffer
-per transformer: output accumulates across chunks, so sharing one between concurrent streams interleaves them),
-and `SetSink` drains at the end of every `Write` and reuses it.
+While a chunk is one unbroken pass-through run, the writer copies nothing and `Out()` returns a slice of your
+own input chunk. The first byte that is not a straight pass-through switches the writer to a real buffer, and
+`Out()` then hands that buffer over instead of copying it, so it is not held for the life of the stream. With a
+sink, a run of pass-through bytes after the commit point that is long enough to be worth it goes to the sink as
+a view of the input rather than a copy.
 
 ### What is held, and what bounds it
 
-`Pass`, `Skip` and `Enter` hold nothing. `Capture`, `Observe`, `Defer` and `Prefix` hold up to their own `cap`;
-a validated container holds up to 64KB; output is held until the commit point. `Buffered()` is the sum of all
-of it and `SetBudget` caps that sum — the per-item caps stay per item. Either limit bails with `ErrLimit`, and
-the offset points at the first byte that did not fit, not at the end of the chunk that carried it.
+| What | Bound |
+|---|---|
+| `Pass`, `Skip`, `Enter` | Nothing is held |
+| `Capture`, `Observe`, `Defer`, `Prefix` | Their own `cap` |
+| A container being type-checked | 64KB; a larger value is accepted without being checked |
+| Output before the commit point | The commit window |
+
+`Buffered()` reports the total and `SetBudget` caps it. Exceeding a cap or the budget fails with `ErrLimit`, and
+the offset points at the first byte that did not fit.
 
 ### Deferred fields and replay
 
-`Defer` holds the raw key run and the raw value. `Release` does not replay on the spot: it marks the frame, and
-the replay happens at that frame's next safe point — the end of the current value, or the close of the frame —
-never in the middle of a child frame, and never at a child's request. Each held pair then re-enters `OnKey` and
-is scanned again, so it takes the action the protocol would take *now*, with everything the protocol has since
-learned. Items still held when the container closes are `ErrLeftoverDefer`: a protocol that forgets them would
-otherwise emit a document with a different meaning, so it fails loudly instead.
+`Defer` holds a key and its raw value. `Release` does not replay on the spot: the replay happens at the frame's
+next safe point — the end of the current value, or the close of the frame — and never in the middle of a child
+frame. Each held item then goes through `OnKey` again, so it gets the action the protocol would choose *now*,
+with everything it has learned since.
+
+Items still held when their container closes fail with `ErrLeftoverDefer`: dropping them silently would change
+what the document means.
 
 ### Sub-hooks
 
 `Enter().Via(hook)` hands every callback inside a subtree to another `Protocol`, including the levels that hook
-enters itself and its own `Defer` replays; the container's `OnLeave` goes back to whoever issued the `Enter`, so
-it can `Pop` what it pushed. Paths and depths stay absolute, so a reusable part does not need a forwarding
-branch in each of the six callbacks.
+enters itself and its own `Defer` replays. The container's `OnLeave` still goes to whoever issued the `Enter`,
+so it can `Pop` what it pushed. Paths and depths stay absolute, so a reusable part needs no forwarding code in
+each callback.
 
 ### Suspending the scan
 
-A protocol may need something the document does not carry -- an image it has to fetch and inline, say.
-`t.Suspend()`, called from any callback during a `Write`, stops the scan at the next byte boundary: the
-callback finishes, the rest of the chunk is kept, and `Write` returns with `Suspended()` true. Until `Resume()`
-the protocol owns the output: it writes the value from outside any callback, in slices if it is large, and
-`Flush()` hands each slice to the sink as it goes, so nothing piles up. `Resume()` scans the kept bytes and
-carries on, and may suspend again. `Write` or `Finish` while suspended, or a `Suspend` during a Defer replay or
-in `Tail`, is a misuse and bails with `ErrMisuse`.
+A protocol sometimes needs something the document does not contain, such as an image it has to fetch and
+inline:
+
+1. Call `t.Suspend()` from a callback during `Write`. The scan stops at the next byte boundary, the rest of the
+   chunk is kept, and `Write` returns with `Suspended()` true.
+2. While suspended, the protocol owns the output. It can write from outside any callback — in slices if the
+   value is large — and `Flush()` hands each slice to the sink as it goes. `Compact()` gives back memory the
+   transformer does not need while it waits.
+3. `Resume()` scans the kept bytes and carries on. It may suspend again.
+
+Calling `Write` or `Finish` while suspended, or `Suspend` during a `Defer` replay or in `Finish` (including
+`Tail`), fails with `ErrMisuse`.
 
 ### The commit window
 
-No output is released before `CommitBytes` (64KB) of input has been scanned. Inside that window a `Bail` costs
-nothing: the caller still holds every raw byte and can fall back to buffering the document and transforming it
-some other way. A caller that knows it no longer needs the retreat — it has seen every field its decision
-depends on — gives it up early with `CommitNow()`, and the window becomes a ceiling rather than a fixed cost.
+No output is released until `CommitBytes` (64KB) of input has been scanned. Within that window a `Bail` costs
+nothing: the caller still has every raw byte and can fall back, for example to buffering the whole document. A
+caller that knows it will not need that fallback can release output early with `CommitNow()`.
 
-Past the commit point, released bytes cannot be recalled, so a late bail is a failure — or, for a
-passthrough-shaped protocol, forwarding the rest of the input verbatim. That is safe only where `Aligned()` is
-true (every byte read so far has been written out or dropped, nothing held back for a decision still to come)
-and `RootDone()` is still false, because the root's closing token is written by `Finish` alone — which also
-runs `Tail` and writes the whitespace that followed the root.
+After the commit point, released bytes cannot be taken back, so a late bail means failure. A pass-through
+protocol can instead stop feeding the transformer and forward the rest of the input verbatim, but only when
+both of these hold:
 
-### Errors
+- `Aligned()` is true: every byte read so far has been written out or dropped, and nothing is held for a
+  decision still to come.
+- `RootDone()` is false: the root's closing bracket is written only by `Finish`.
 
-The `Code` / message / offset / path shape is described above; what the architecture adds is where the offset
-points. A grammar error points at the failing byte, a cap or budget overflow at the first byte that did not
-fit, a protocol's own `Bail` at the current scan position, and one raised in `Finish` at the total length.
-Replays do not disturb any of it: while deferred items are re-scanned the offsets stay at the outer position,
-so an error found during a replay still points into the original input rather than into the held copy.
+### Where error offsets point
 
-### Checking the shape the caller would have unmarshalled
+| Error | Offset |
+|---|---|
+| Grammar error | The failing byte |
+| Cap or budget overflow | The first byte that did not fit |
+| A protocol's own `Bail` | The current scan position |
+| Raised in `Finish` | The end of the input |
 
-A streaming transform replaces a buffered one, and the buffered one ended in an `Unmarshal` that rejected
-documents by type. Forwarding a document that unmarshal would have refused makes the streaming path the more
-permissive of the two — so the caller can hand over the shape it would have decoded into and get the same
-rejection while streaming:
+During a `Defer` replay, offsets still point into the original input, not into the held copy.
+
+### Type checking against the target struct
+
+A streaming transform often replaces code that unmarshalled the document into a struct, and that unmarshal
+rejected documents whose fields had the wrong type. To reject the same documents while streaming, derive the
+expected types from that struct:
 
 ```go
-t.SetFieldTree(ason.FieldTreeOf(ChatRequest{}, 4)) // implies the root-level table
+t.SetFieldTree(ason.FieldTreeOf(ChatRequest{}, 4)) // 4 is the recursion depth
 ```
 
-The tree also carries the marshal side of every field (`Kind`, `Omit`, `Int`, `ZeroJSON`), for a protocol that
-reproduces a buffered path's unmarshal-and-marshal round trip; the engine itself does not read those.
+- **Derived, not written.** `FieldTreeOf` reads the struct by reflection (`FieldTypesOf` covers root fields
+  only, via `SetFieldTypes`). A hand-kept table drifts from the struct the moment a field is added.
+- **Errs toward accepting.** Types with their own `UnmarshalJSON` or `UnmarshalText`, interfaces, and names two
+  fields share accept anything, and `null` is always accepted. `encoding/json`'s case-insensitive name matching
+  and its rejection of a fraction for an integer field are not reproduced. Every gap makes the check more
+  permissive than the unmarshal, never stricter.
+- **Bounded.** Nested checks cover only containers the tree describes, up to 64KB each; a larger value is
+  accepted unchecked, and containers the tree says nothing about keep the fast path.
+- **Dropped fields count too**, because the original unmarshal would have read them.
+- A mismatch fails with `ErrUnsupported`, so before the commit point the caller can still fall back.
 
-The table is *derived* from the struct by reflection (`FieldTypesOf` for root fields, `FieldTreeOf` for the
-recursive form), because a hand-kept one drifts from the struct the moment a field is added, and the drift is
-silent. It errs towards accepting throughout: a type that decodes itself (`json.Unmarshaler`,
-`encoding.TextUnmarshaler`), an interface and a name two fields share all accept everything, `null` is accepted
-for every field, and `encoding/json`'s case-insensitive name matching and its rejection of a fractional number
-for an integer field are not reproduced. Every gap makes the check accept a little more than the unmarshal,
-never less.
+The tree also records each field's marshal side (`Kind`, `Omit`, `Int`, `ZeroJSON`) for protocols that
+reproduce an unmarshal-and-marshal round trip; the engine itself does not use it.
 
-Nested checking is bounded the same way: only containers the tree has an opinion about are checked, up to 64KB
-of content each, and past that the value is accepted rather than judged — a large field never becomes a
-rejection, and a container the tree says nothing about keeps the region fast path untouched. Fields the
-protocol *drops* are checked too, because the caller's unmarshal reads a known field whether or not the
-transform keeps it. A mismatch is `ErrUnsupported`, which before the commit point still leaves the fallback
-open.
+### String scanning
+
+- String bodies are scanned 8 bytes at a time, switching to 16 once a string passes 128 bytes.
+- By default the long-string loop is assembly: NEON on arm64 and SSE2 on amd64, with AVX2 chosen at run time
+  when the CPU and OS support it.
+- With `GOEXPERIMENT=simd` the same scan comes from `simd/archsimd` instead, on arm64, amd64 and wasm.
+- The `purego` build tag, and wasm builds without the experiment, use the portable word-at-a-time scan.
 
 ### Invariants
 
-1. **Untouched bytes are not touched.** Pass-through is byte-identical — whitespace, key order and escapes
+1. **Untouched bytes stay untouched.** Pass-through is byte-identical — whitespace, key order and escapes
    included — so an in-place rewrite matches `sjson` exactly.
-2. **No assumption about field order.** A shape that needs a later field is held with a bounded `Defer` and
-   replayed once the information is there; past the bound it is unsupported, not a guess.
-3. **"Unsupported" has a way out.** Output is withheld until the commit point, so the caller can still take
-   another route cleanly.
+2. **No assumptions about field order.** A shape that depends on a later field is held with a bounded `Defer`
+   and replayed once the information arrives; past the bound it is unsupported, never guessed.
+3. **An unsupported document has a way out.** Output is withheld until the commit point, so the caller can still
+   take another route cleanly.
 
 ## Examples
 
-`examples/` holds one runnable program per technique — passthrough, rename, in-place rewrite (`KeyProbe`),
-redaction with `Prefix`, restructuring `items` into `data.items`, deferred replay when a value arrives before
-the field that decides its shape, sub-hooks with `Enter().Via`, streaming a `data:` URL payload into another
-shape, read-only observation, and the commit-point fallback. Each reads stdin in small chunks:
+Each directory under `examples/` is a runnable program that reads JSON from stdin in small chunks and writes the
+transformed result to stdout:
 
-```
+| Example | Shows |
+|---|---|
+| [`passthrough`](examples/passthrough) | `BaseProtocol`: untouched bytes stay identical |
+| [`rename`](examples/rename) | `Pass().As`: rename top-level keys |
+| [`rewrite`](examples/rewrite) | `KeyProbe`: rewrite top-level values in place, byte-identical to `sjson` |
+| [`redact`](examples/redact) | `Prefix`: read only the first bytes of a string and skip the rest |
+| [`restructure`](examples/restructure) | `PushObj` / `PushArr` / `Enter().Flat()`: move one container into a nested shape |
+| [`defer-replay`](examples/defer-replay) | `Defer` / `Release`: a value arrives before the field that decides its shape |
+| [`subhook`](examples/subhook) | `Enter().Via`: hand a whole subtree to another protocol |
+| [`attachment`](examples/attachment) | `Prefix` + `Pass().Wrap`: split a `data:` URL and stream its payload into another shape |
+| [`observe`](examples/observe) | Read-only: skip everything, count elements, discard the output |
+| [`fallback`](examples/fallback) | The commit point: switch strategy when the protocol bails within the first 64KB |
+| [`chatconv`](examples/chatconv) | A complete chat-request conversion protocol, checked against a buffered reference |
+| [`llm`](examples/llm) | The protocols Higress ai-proxy runs on this engine, with their behavioural tests |
+
+```sh
 echo '{"items":[{"k":"v"}],"owner":"team/42"}' | go run ./examples/rewrite -chunk 3
 ```
 
-`doc_example_test.go` covers the same techniques as verified `Example` functions.
+`-chunk` sets the chunk size, which is deliberately small by default. The same techniques are verified as
+`Example` functions in [`doc_example_test.go`](doc_example_test.go).
 
-## Tests
+## Testing
 
-`go test ./...` runs four layers, all on every push (see `.github/workflows/test.yml`, with `-race`,
-Go 1.24 and stable, plus a short native fuzz job and a `wasip1` build):
+```sh
+go test ./...
+```
 
-- **engine**: actions and replay rules, format fidelity (no byte changes on untouched input,
-  `sjson`-identical rewrites), strict literal / escape / whitespace rejection at every chunk size, chunk-size
-  invariance on random documents, garbage input never panics, deep nesting and multi-megabyte strings;
-- **examples**: every program under `examples/` is built and run with fixed input at three chunk sizes and
-  compared with `examples/testdata/*.golden`; the `Example` functions in `doc_example_test.go` are verified too;
-- **scenarios**: `examples/chatconv/conv` is a complete request-conversion protocol that uses every engine
-  path (Capture, Defer / Release, Prefix, Via, Lazy levels, protocol-built levels, Tail). It is checked
-  against a buffered reference implementation on 40 hand-written shapes and 3000 random documents
-  (shuffled field order, escapes, multi-modal parts, tool shapes, malformed input) at chunk sizes 1 / 3 / 7 / 64 / 4096;
-- **protocol suite** (`examples/llm`): the protocols Higress ai-proxy runs on this engine, with their
-  behavioural tests and a golden differential — 7 suites, every hand-written case plus 1000 random requests
-  each, compared field by field with the output of the reference (buffered) implementations at four chunk sizes;
-- **fuzz**: `FuzzPassthrough` and `FuzzKeyProbe` (`go test -fuzz=FuzzPassthrough .`).
+- **Engine** (`./engine`): actions and replay rules; byte fidelity against `sjson` rewrites; strict rejection at
+  every chunk size; identical results at any chunk size on random documents; garbage input never panics; deep
+  nesting and multi-megabyte strings.
+- **Examples**: every program under `examples/` runs on fixed input at chunk sizes 1, 3 and 4096 and is compared
+  with its golden output.
+- **Scenarios** (`examples/chatconv/conv`): a protocol that exercises every engine path, checked against a
+  buffered reference on 37 hand-written shapes and 3000 random documents at chunk sizes 1, 3, 7, 64 and 4096.
+- **Protocol suite** (`examples/llm`): 7 suites of hand-written cases plus 1000 random requests each, compared
+  field by field with the buffered implementations at chunk sizes 1, 7, 64 and 4096.
+- **Fuzzing** (`./engine`): `FuzzPassthrough`, `FuzzKeyProbe` and `FuzzStrictModes`.
 
-Design notes: [docs/DESIGN.md](docs/DESIGN.md). Roadmap and the reasoning behind it: [docs/OPTIMIZATION.md](docs/OPTIMIZATION.md).
+```sh
+go test -run='^$' -fuzz=FuzzPassthrough ./engine
+```
+
+CI runs on every push and pull request:
+
+- Race-enabled tests on Go 1.27 and the latest stable release, with `gofmt`, `go vet` and a run of every example.
+- The vector string scan on arm64, amd64 and wasm (executed under Node), with and without `GOEXPERIMENT=simd`.
+- A `wasip1` build, and a check that every architecture builds and selects the right scan.
+- Every benchmark compiles and runs once.
+
+## Further reading
+
+- [docs/DESIGN.md](docs/DESIGN.md) — design notes
+- [docs/OPTIMIZATION.md](docs/OPTIMIZATION.md) — roadmap and the reasoning behind it
