@@ -48,15 +48,24 @@ const (
 	rAComma                  // after a value in an array: expecting , or ]
 )
 
+// The tables below are indexed as tbl[ph&regPhaseMask] rather than tbl[ph]. The mask is what lets the compiler
+// prove the index is in range and drop the bounds check -- five of them in scan, each a compare and a branch to
+// panicBounds, replaced by one AND. It is only sound while every phase fits under the mask, so that is asserted at
+// compile time: add a phase past rAComma without widening the tables and this stops building rather than folding a
+// stray index onto the wrong entry, which is what a mask does instead of panicking.
+const regPhaseMask = 15
+
+var _ [regPhaseMask - int(rAComma)]struct{} // compile-time: rAComma <= regPhaseMask
+
 var (
 	// phase after the start of a string (key or value).
-	regAfterStr = [...]regPhase{rKey0: rColon, rKey: rColon, rOValue: rOComma, rAValue0: rAComma, rAValue: rAComma, rAComma: rErr}
+	regAfterStr = [16]regPhase{rKey0: rColon, rKey: rColon, rOValue: rOComma, rAValue0: rAComma, rAValue: rAComma, rAComma: rErr}
 	// after the start of a scalar / container (containers are then overridden by regPush).
-	regAfterVal = [...]regPhase{rOValue: rOComma, rAValue0: rAComma, rAValue: rAComma, rAComma: rErr}
+	regAfterVal = [16]regPhase{rOValue: rOComma, rAValue0: rAComma, rAValue: rAComma, rAComma: rErr}
 	// after a comma.
-	regAfterComma = [...]regPhase{rOComma: rKey, rAComma: rAValue}
+	regAfterComma = [16]regPhase{rOComma: rKey, rAComma: rAValue}
 	// can the container close: 0 = no (missing key / value, trailing comma), 1 = object may close, 2 = array may close.
-	regClose = [...]uint8{rKey0: 1, rOComma: 1, rAValue0: 2, rAComma: 2}
+	regClose = [16]uint8{rKey0: 1, rOComma: 1, rAValue0: 2, rAComma: 2}
 )
 
 // frame is a container entered with Enter (a dispatch frame). Containers inside regions get no frame, only a depth count.

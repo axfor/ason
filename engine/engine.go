@@ -215,7 +215,7 @@ scan:
 					// in the default branch, which costs a document that does have whitespace one extra jump.
 					switch c {
 					case '"':
-						if ph = regAfterStr[ph]; ph == rErr {
+						if ph = regAfterStr[ph&regPhaseMask]; ph == rErr {
 							t.BailCode(ErrSyntax, "unexpected string")
 							continue scan
 						}
@@ -225,7 +225,7 @@ scan:
 						i++
 						continue scan
 					case '{', '[':
-						if regAfterVal[ph] == rErr {
+						if regAfterVal[ph&regPhaseMask] == rErr {
 							t.BailCode(ErrSyntax, "unexpected object or array")
 							continue scan
 						}
@@ -233,7 +233,7 @@ scan:
 						t.regPush(c == '[')
 						ph = t.regPh
 					case '}', ']':
-						k := regClose[ph]
+						k := regClose[ph&regPhaseMask]
 						if k == 0 {
 							t.BailCode(ErrSyntax, "missing value or trailing comma before closing bracket")
 							continue scan
@@ -253,7 +253,7 @@ scan:
 							continue scan
 						}
 					case ',':
-						if ph = regAfterComma[ph]; ph == rErr {
+						if ph = regAfterComma[ph&regPhaseMask]; ph == rErr {
 							t.BailCode(ErrSyntax, "unexpected comma")
 							continue scan
 						}
@@ -268,7 +268,7 @@ scan:
 							i++
 							continue
 						}
-						if ph = regAfterVal[ph]; ph == rErr {
+						if ph = regAfterVal[ph&regPhaseMask]; ph == rErr {
 							t.BailCode(ErrSyntax, "unexpected literal")
 							continue scan
 						}
