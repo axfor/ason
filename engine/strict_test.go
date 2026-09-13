@@ -402,3 +402,15 @@ func TestRegionGrammarCases(t *testing.T) {
 		}
 	}
 }
+
+// numTrans rows are padded to a power of two so the inner index can be masked. Every cell past the real classes
+// has to refuse the input, or a class outside the grammar would fold onto a live transition instead of panicking.
+func TestPaddedNumTransCellsAreInvalid(t *testing.T) {
+	for s := range numTrans {
+		for c := int(ncCount); c <= numClassMask; c++ {
+			if got := numTrans[s][c]; got != nsBad {
+				t.Errorf("numTrans[%d][%d] = %d, want nsBad", s, c, got)
+			}
+		}
+	}
+}

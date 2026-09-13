@@ -286,6 +286,17 @@ const (
 // Table-driven number DFA: byte class × state → new state (nsBad = invalid).
 type numClass uint8
 
+// numTrans is indexed as [s][class&numClassMask]. numClassOf returns a numClass, which the compiler only knows
+// as a uint8, so without the mask the inner index carried a range check against ncCount that it could not
+// discharge -- the one bounds check left in numStep, since `s >= nsBad` already proves the outer index and a
+// [256] table indexed by a byte proves the other. Rounding the row up to a power of two removes it, and makes
+// the row stride a shift instead of a shift-and-subtract. The padding entry is nsBad like every other cell the
+// table is initialised with, so a class that somehow fell outside the grammar folds onto "invalid" rather than
+// onto a live transition; the assertion below is what keeps that true as classes are added.
+const numClassMask = 7
+
+var _ [numClassMask - int(ncCount-1)]struct{} // compile-time: ncCount-1 <= numClassMask
+
 const (
 	ncOther numClass = iota
 	ncZero           // '0'
@@ -309,7 +320,7 @@ var numClassOf = func() (t [256]numClass) {
 	return
 }()
 
-var numTrans = func() (t [nsBad][ncCount]numState) {
+var numTrans = func() (t [nsBad][numClassMask + 1]numState) {
 	for s := range t {
 		for c := range t[s] {
 			t[s][c] = nsBad
@@ -339,7 +350,7 @@ func numStep(s numState, c byte) numState {
 	if s >= nsBad {
 		return nsBad
 	}
-	return numTrans[s][numClassOf[c]]
+	return numTrans[s][numClassOf[c]&numClassMask]
 }
 
 func numAccept(s numState) bool {
