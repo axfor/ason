@@ -9,10 +9,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 1.24 is the floor go.mod declares; stable is whatever is current. Both matter: the assembler's encoding
-        # choices differ between releases -- VPBROADCASTB from a general register became an AVX-512 encoding, which
-        # SIGILLed on a runner with only AVX2 -- and only the stable job caught it.
-        go: ["1.24", "stable"]
+        # 1.27 is the floor go.mod declares; stable is whatever is current. Keeping both is deliberate: the
+        # assembler's encoding choices differ between releases -- VPBROADCASTB from a general register became an
+        # AVX-512 encoding, which SIGILLed on a runner with only AVX2, and only the newer job caught it. The floor
+        # moved to 1.27 because simd/archsimd lives there, which collapses the two entries onto the same release
+        # for now; until the next one ships, hack/encoding-check.sh is what covers that class of mistake, and it
+        # runs on any architecture because it reads the encodings out of a cross-compiled binary.
+        go: ["1.27", "stable"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
