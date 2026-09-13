@@ -95,7 +95,7 @@ jobs:
       - name: unit, scenario and example tests (race)
         run: GOEXPERIMENT=simd go test -race -count=1 ./...
       - name: the scan still matches its reference byte for byte
-        run: GOEXPERIMENT=simd go test -count=1 -v -run 'ScanStringBody|VectorScan' .
+        run: GOEXPERIMENT=simd go test -count=1 -v -run 'ScanStringBody|VectorScan' ./engine ./simd
 
   wasm:
     name: wasm through simd/archsimd, executed under node

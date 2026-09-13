@@ -266,7 +266,7 @@ shape, read-only observation, and the commit-point fallback. Each reads stdin in
 echo '{"items":[{"k":"v"}],"owner":"team/42"}' | go run ./examples/rewrite -chunk 3
 ```
 
-`example_test.go` covers the same techniques as verified `Example` functions.
+`doc_example_test.go` covers the same techniques as verified `Example` functions.
 
 ## Tests
 
@@ -277,7 +277,7 @@ Go 1.24 and stable, plus a short native fuzz job and a `wasip1` build):
   `sjson`-identical rewrites), strict literal / escape / whitespace rejection at every chunk size, chunk-size
   invariance on random documents, garbage input never panics, deep nesting and multi-megabyte strings;
 - **examples**: every program under `examples/` is built and run with fixed input at three chunk sizes and
-  compared with `examples/testdata/*.golden`; the `Example` functions in `example_test.go` are verified too;
+  compared with `examples/testdata/*.golden`; the `Example` functions in `doc_example_test.go` are verified too;
 - **scenarios**: `examples/chatconv/conv` is a complete request-conversion protocol that uses every engine
   path (Capture, Defer / Release, Prefix, Via, Lazy levels, protocol-built levels, Tail). It is checked
   against a buffered reference implementation on 40 hand-written shapes and 3000 random documents
@@ -288,67 +288,3 @@ Go 1.24 and stable, plus a short native fuzz job and a `wasip1` build):
 - **fuzz**: `FuzzPassthrough` and `FuzzKeyProbe` (`go test -fuzz=FuzzPassthrough .`).
 
 Design notes: [docs/DESIGN.md](docs/DESIGN.md). Roadmap and the reasoning behind it: [docs/OPTIMIZATION.md](docs/OPTIMIZATION.md).
-
-## 中文说明
-
-ason 是 Go 的通用流式 JSON 转换框架：文档边到达边改写，按任意大小的块喂入、随时取出已转换的输出，内存与文档大小无关。
-协议逐个 key 决定直通、丢弃、改名、搬家、加壳、捕获或改写，只有它明确要求持有的部分才缓冲，且都有上限。
-没动的字节一个不改（空白、顺序、转义都保留，原位改写与 sjson 逐字节一致），改动的部分也不需要物化整份文档。
-无标准库以外的依赖，可编译到 `GOOS=wasip1 GOARCH=wasm`。
-
-协议就是一组回调：扫描器对每个 key / 数组元素向协议要一个动作（Pass / Skip / Enter / Probe / Observe / Capture / Defer / Prefix / Bail），
-写出器惰性建层，输出在 64KB 提交点之后才下发——调用方在此之前保留原始字节，协议判定不支持时可以换一条路。
-开头那张示范图就是这个过程：一份文档分 4 块到达，引擎每扫到一个字段就回调你的 hook（`OnKey` 要动作、
-`Capture` 的值再经 `OnValue` 交回协议改写），拿到答案后由引擎自己搬字节——直通的原样出去、被丢的不留一点痕迹，
-512KB 的值全程不进内存；输出下方的编号标出"读完第 N 块时输出长到哪"——第 2 块只装了被丢弃的字段，输出一个字节都没长。
-扫描器按 `encoding/json` 的拒绝面逐字节校验，常数状态。
-
-### 架构原理
-
-三层、一遍扫描、不建对象树：**扫描器**（第 1 层）把字节变成事件，**协议**（第 2 层）为每个事件给一个动作，
-**写出器**惰性建层产出字节，**守卫**（第 3 层：提交窗口 / 预算 / bail）决定一个判定还能撤回多久。
-
-- **派发帧 vs 区域**——全部设计都由这一刀分出来。协议 `Enter` 过的容器是**派发帧**：其中每个 key / 元素都触发回调；
-  一个值从首字节到末字节、动作已定的那段是**区域**：不再派发，扫描器只跟文法，字节按目标流向输出 / 丢弃 /
-  捕获缓冲 / Defer 暂存 / Prefix 窗口 / 校验副本。区域内不建路径、不 intern key，嵌套只是一个计数器加一个
-  64 位的容器种类位栈——协议没问过的整棵子树只值一次区间拷贝。"内存与文档大小无关"就是从这里来的：
-  只有协议要求的地方才有帧，其余都是区域。
-- **常数状态、与分块无关**——三个定长状态机：字节态（idle / key / 字符串 / 标量 + 转义与 `\u` 计数）、
-  帧阶段（key → 冒号 → 值 → 逗号）、区域阶段（9 个阶段外加一个非法结果，把容器种类编码进阶段里，逗号 / 冒号 / 字符串 / 标量查一次表，
-  只有括号动位栈）。状态里没有任何东西知道块在哪断——同一文档按 1 / 3 / 7 / 64 / 4096 字节喂入，输出、错误与偏移完全一致。
-  key 走 256 槽直接映射的 intern 缓存（固定 4KB），重复 key 不分配，海量不同 key 也撑不大它；
-  `SetKeyCache` 让多个 transformer 共用一份——一份文档的 key 就是下一份的 key，第一份之后派发一次分配都不用
-  （缓存同一时刻只属于一个 goroutine）。
-- **惰性写出器**——`Enter` 只登记层不写括号；第一次往里写才打开它和所有未打开的祖先，逗号在各层自动处理，
-  协议代码永远不管顺序。没写过的层闭合时物化成 `{}` / `[]`，`Lazy` 则一个字节都不留。`Flat` 让输入容器不占输出层，
-  `PushObj` / `PushArr` / `Pop` 让协议自建层——两者配合把一个输入容器落进多层嵌套输出。`At(level)` 往外层写，
-  只要其上各层都还没打开就成立；一旦已打开就是 `ErrMisuse`，而不是悄悄放错位置。
-- **零拷贝输出**——一个块只要还是连续直通，写出器一个字节都不拷：它只在调用方的块上延长一个长度，`Out()` 交回该块的切片；
-  第一个非直通字节才把这段物化。`Out()` 交出缓冲所有权而非拷贝，提交点前的大缓冲立刻变垃圾而不是被整条流拿住；
-  `SetOutBuffer` 用调用方自己的缓冲，`SetSink` 每个 `Write` 末尾下发并复用。
-- **持有与上限**——`Pass` / `Skip` / `Enter` 什么都不持有；`Capture` / `Observe` / `Defer` / `Prefix` 各自受 `cap` 约束，
-  校验副本上限 64KB，输出持有到提交点。`Buffered()` 是这些的总和，`SetBudget` 卡总和；触上限一律 `ErrLimit`，
-  偏移指向第一个装不下的字节。
-- **Defer 回放**——`Release` 不当场回放，而是标记本帧，在该帧下一个安全点（当前值结束或本帧闭合）才回放，
-  绝不在子帧中途、也不由子帧代劳；每一条重新进 `OnKey`、重新扫描，因此拿到的是协议**此刻**的判断。
-  闭合时还有没放的 Defer 是 `ErrLeftoverDefer`——协议漏放会产出语义不同的文档，所以这里响亮地失败。
-- **子 hook**——`Enter().Via(hook)` 把整棵子树的回调（含它自己进入的更深层与 Defer 回放）交给另一个 Protocol，
-  容器的 `OnLeave` 回到发起方以便 `Pop` 自己压的层；路径与深度保持绝对。
-- **提交窗口**——扫满 `CommitBytes`（64KB）之前不下发输出：窗口内 bail 不花任何代价，调用方还攥着全部原始字节，
-  可以整体缓冲换一条路；已经确定不再需要这条退路的调用方（决策依赖的字段都看完了）用 `CommitNow()` 提前放弃它，
-  窗口于是只是上限而不是固定成本。窗口外已下发的字节收不回来，只能失败，或（对透传型协议）原样转发剩余字节——
-  而后者只在 `Aligned()` 为 true（读进来的每个字节都已写出或已丢弃，没有任何字节还等着未定的判断）
-  且 `RootDone()` 仍为 false 时才安全：根的闭合括号只能由 `Finish` 写，它同时跑 `Tail` 并补上根之后的空白。
-- **按调用方本来要 unmarshal 的形状校验**——流式转换替掉的那条路最后是一次按类型拒绝的 `Unmarshal`；
-  放行一份它会拒的文档，就等于流式这条路更宽松。所以把那个结构体交进来：`SetFieldTree(ason.FieldTreeOf(Req{}, 4))`。
-  表是**反射推导**的，不是手写的（手写表在加字段那一刻就悄悄漂移）。它一律往"接受"偏：自解码类型
-  （`json.Unmarshaler` / `encoding.TextUnmarshaler`）、接口、同名字段一律全类型放行，`null` 对每个字段都接受，
-  `encoding/json` 的大小写不敏感匹配与"整数字段拒小数"也不复刻——每一处缺口都只让它比 unmarshal 接受得更多、不会更少。
-  嵌套校验同样有界：只查树有意见的容器、每个至多 64KB，超出就接受而不再判断（大字段不会变成拒绝），
-  树没意见的容器完全不碰区域快路径；被 `Skip` 掉的字段也照查（调用方的 unmarshal 不管你留不留都会读它）。
-  不匹配是 `ErrUnsupported`，在提交点之前依然留着退路。
-
-不变量三条：**没动的字节一个不改**；**不对字段顺序做假设**（要靠后面字段才能定的形状用有上限的 `Defer` 暂存回放，
-超限即判定不支持，不猜）；**判定不支持要有出路**（提交点之前输出不下发）。
-
-示例见 `examples/`（每种技巧一个可运行程序）与 `example_test.go`，设计见 `docs/DESIGN.md`，优化方案与洞察见 `docs/OPTIMIZATION.md`。
