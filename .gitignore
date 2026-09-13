@@ -2,3 +2,6 @@
 *.test
 cover.out
 *.prof
+.xsdd/project-state
+.xsdd/README.md
+.xsdd/.status-fp

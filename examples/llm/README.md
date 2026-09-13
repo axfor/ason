@@ -4,7 +4,7 @@ A snapshot of the request-conversion protocols that [Higress](https://github.com
 runs on this engine: OpenAI → Claude, OpenAI → Gemini, OpenAI → native Qwen (DashScope), and the
 OpenAI-compatible passthrough family with its Qwen-compatible, Zhipu and OpenRouter variants, plus the
 reusable `ToolsHook`. They are kept here as the engine's most demanding workload; the source of truth is the
-Higress repository (`plugins/wasm-go/pkg/streamxform`), `scripts/sync-llm.sh` refreshes the copy.
+Higress repository (`plugins/wasm-go/pkg/streamxform`), `hack/sync-llm.sh` refreshes the copy.
 
 ## Tests
 
