@@ -120,19 +120,6 @@ const (
 // SetRoot sets the allowed root shape. With an array root, depth 1 is an index and dispatches through OnElem.
 func (t *Transformer) SetRoot(k RootKind) { t.root = k }
 
-// FieldTypes is the set of JSON types a root-level field may have. Zero accepts nothing but null.
-type FieldTypes uint8
-
-const (
-	TypeString FieldTypes = 1 << iota
-	TypeNumber
-	TypeBool
-	TypeObject
-	TypeArray
-	// TypeAny accepts every type; use it for fields whose Go type is interface{} or json.RawMessage.
-	TypeAny = TypeString | TypeNumber | TypeBool | TypeObject | TypeArray
-)
-
 // typeBit maps a scanned value kind to its FieldTypes bit. Null has none: it is always accepted.
 func typeBit(k ValueKind) FieldTypes {
 	switch k {
@@ -175,11 +162,7 @@ func (t *Transformer) SetFieldTree(tr *FieldTree) {
 	if tr != nil && tr.Keys != nil && t.fieldTypes == nil {
 		// The tree already carries the root fields' own types, so a caller that has a tree should not have to
 		// hand over the flat table as well. A tree from FieldTreeOf has it ready and every transformer shares it.
-		if tr.rootTypes != nil {
-			t.fieldTypes = tr.rootTypes
-		} else {
-			t.fieldTypes = keyTypes(tr)
-		}
+		t.fieldTypes = tr.RootTypes()
 	}
 }
 

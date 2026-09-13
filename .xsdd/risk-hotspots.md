@@ -6,33 +6,33 @@
 
 | 指标 | 值 |
 |---|---|
-| 源文件数 | 33 |
+| 源文件数 | 45 |
 | 巨型文件（>600 行）| 3 |
 | 技术债标记（TODO/FIXME/HACK/XXX/deprecated）| 0 |
-| ⚠ 高 churn 无测试危险区（改≥5 次 + 无同名测试）| 1 |
+| ⚠ 高 churn 无测试危险区（改≥5 次 + 无同名测试）| 2 |
 
 ## Top 15 风险热点（churn × 复杂度，两高优先——缺陷高发地）
 
 | # | 文件 | churn | LOC | 分支 | 债 | 测试 | 风险提示 |
 |---|---|---|---|---|---|---|---|
-| 1 | `engine.go` | 20 | 1617 | 305 | 0 | ✅ | 巨型文件(先拆) 高变更高复杂(重构候选)  |
+| 1 | `engine.go` | 33 | 437 | 107 | 0 | ✅ | 高变更高复杂(重构候选)  |
 | 2 | `examples/llm/proto_claude.go` | 3 | 1080 | 267 | 0 | ⬜ | 巨型文件(先拆)  |
-| 3 | `examples/llm/proto_gemini.go` | 3 | 682 | 162 | 0 | ⬜ | 巨型文件(先拆)  |
-| 4 | `jsonutil.go` | 4 | 556 | 103 | 0 | ⬜ | — |
-| 5 | `examples/llm/proto_qwen.go` | 3 | 546 | 137 | 0 | ⬜ | — |
-| 6 | `writer.go` | 7 | 274 | 43 | 0 | ⬜ | 改多无测试(先补测试)  |
-| 7 | `examples/llm/proto_openai.go` | 3 | 295 | 73 | 0 | ⬜ | — |
-| 8 | `examples/chatconv/conv/conv.go` | 2 | 439 | 110 | 0 | ✅ | — |
-| 9 | `examples/llm/proto_openai_variants.go` | 3 | 257 | 53 | 0 | ⬜ | — |
-| 10 | `action.go` | 4 | 158 | 17 | 0 | ⬜ | — |
-| 11 | `examples/llm/hook_tools.go` | 3 | 111 | 31 | 0 | ⬜ | — |
-| 12 | `validate.go` | 1 | 185 | 42 | 0 | ✅ | — |
-| 13 | `examples/observe/main.go` | 3 | 86 | 11 | 0 | ⬜ | — |
-| 14 | `examples/fallback/main.go` | 3 | 74 | 11 | 0 | ⬜ | — |
-| 15 | `errors.go` | 3 | 71 | 7 | 0 | ✅ | — |
+| 3 | `writer.go` | 12 | 348 | 55 | 0 | ⬜ | 改多无测试(先补测试) 高变更高复杂(重构候选)  |
+| 4 | `jsonutil.go` | 6 | 575 | 106 | 0 | ⬜ | 改多无测试(先补测试)  |
+| 5 | `examples/llm/proto_gemini.go` | 3 | 682 | 162 | 0 | ⬜ | 巨型文件(先拆)  |
+| 6 | `examples/llm/proto_qwen.go` | 3 | 546 | 137 | 0 | ⬜ | — |
+| 7 | `fieldtree.go` | 4 | 263 | 63 | 0 | ✅ | — |
+| 8 | `examples/llm/proto_openai.go` | 3 | 295 | 73 | 0 | ⬜ | — |
+| 9 | `examples/chatconv/conv/conv.go` | 2 | 439 | 110 | 0 | ✅ | — |
+| 10 | `examples/llm/proto_openai_variants.go` | 3 | 257 | 53 | 0 | ⬜ | — |
+| 11 | `region.go` | 1 | 644 | 133 | 0 | ⬜ | 巨型文件(先拆)  |
+| 12 | `lifecycle.go` | 1 | 471 | 83 | 0 | ⬜ | — |
+| 13 | `action.go` | 4 | 158 | 17 | 0 | ⬜ | — |
+| 14 | `examples/llm/hook_tools.go` | 3 | 111 | 31 | 0 | ⬜ | — |
+| 15 | `validate.go` | 1 | 185 | 42 | 0 | ✅ | — |
 
-> ⚠ **另有 18 个文件同样命中热点判据，未列出**（按 churn × 复杂度降序取前 15 —— 清单长到没人读就等于没产出）。
-> 要看全部：`--top 33` 重跑。**本表是抓重点用的，不是完整的遗留风险清单。**
+> ⚠ **另有 30 个文件同样命中热点判据，未列出**（按 churn × 复杂度降序取前 15 —— 清单长到没人读就等于没产出）。
+> 要看全部：`--top 45` 重跑。**本表是抓重点用的，不是完整的遗留风险清单。**
 
 ## 建议处置顺序（风险驱动）
 
@@ -50,16 +50,16 @@
 
 | 次数 | 文件 A | 文件 B |
 |---|---|---|
-| 6 | `engine.go` | `writer.go` |
-| 6 | `engine.go` | `README.md` |
-| 5 | `docs/OPTIMIZATION.md` | `README.md` |
-| 4 | `engine.go` | `zerocopy_test.go` |
-| 4 | `docs/OPTIMIZATION.md` | `engine.go` |
-| 4 | `docs/DESIGN.md` | `README.md` |
-| 4 | `docs/DESIGN.md` | `engine.go` |
-| 3 | `README.md` | `writer.go` |
-| 3 | `jsonutil.go` | `README.md` |
-| 3 | `example_test.go` | `README.md` |
+| 13 | `docs/OPTIMIZATION.md` | `README.md` |
+| 9 | `engine.go` | `writer.go` |
+| 8 | `engine.go` | `zerocopy_test.go` |
+| 8 | `engine.go` | `README.md` |
+| 6 | `docs/DESIGN.md` | `README.md` |
+| 5 | `.github/workflows/test.yml` | `docs/OPTIMIZATION.md` |
+| 4 | `scanstring_generic.go` | `scanstring_neon_arm64.go` |
+| 4 | `jsonutil.go` | `README.md` |
+| 4 | `docs/OPTIMIZATION.md` | `scanstring_sse2_amd64.go` |
+| 4 | `docs/OPTIMIZATION.md` | `scanstring_generic.go` |
 
 > 共现 ≥3 次才列。没有行 = 本仓历史里没有明显的隐藏耦合（提交粒度很细时也会这样）。
 
@@ -67,7 +67,6 @@
 
 | 最后改动 | 累计改动次数 | 文件 |
 |---|---|---|
-| 2026-09-06 | 1 | `examples/llm/README.md` |
 | 2026-09-06 | 1 | `examples/llm/testdata/claude.jsonl.gz` |
 | 2026-09-06 | 1 | `examples/llm/testdata/gemini.jsonl.gz` |
 | 2026-09-06 | 1 | `examples/llm/testdata/openai.jsonl.gz` |
@@ -75,6 +74,7 @@
 | 2026-09-06 | 1 | `examples/llm/testdata/qwen_compat.jsonl.gz` |
 | 2026-09-06 | 1 | `examples/llm/testdata/qwen_native.jsonl.gz` |
 | 2026-09-06 | 1 | `examples/llm/testdata/zhipu.jsonl.gz` |
+| 2026-09-06 | 1 | `examples/testdata/attachment.golden` |
 
 > 最久没动的几个。**改动次数少 = 稳定资产，动它要格外小心（没人记得它为什么这么写）；
 > 改动次数多却很久没动 = 曾经翻腾过的老债，现在没人敢碰。**
@@ -83,7 +83,7 @@
 
 | 提交数 | 作者 |
 |---|---|
-| 32 | axfor |
+| 90 | axfor |
 
 > 提交高度集中在一两个人身上 = **离职风险**，也是评审人选择的依据。
 

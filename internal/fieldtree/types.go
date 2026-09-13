@@ -1,10 +1,23 @@
-package ason
+package fieldtree
 
 import (
 	"encoding"
 	"encoding/json"
 	"reflect"
 	"strings"
+)
+
+// FieldTypes is the set of JSON types a root-level field may have. Zero accepts nothing but null.
+type FieldTypes uint8
+
+const (
+	TypeString FieldTypes = 1 << iota
+	TypeNumber
+	TypeBool
+	TypeObject
+	TypeArray
+	// TypeAny accepts every type; use it for fields whose Go type is interface{} or json.RawMessage.
+	TypeAny = TypeString | TypeNumber | TypeBool | TypeObject | TypeArray
 )
 
 // FieldTypesOf derives the SetFieldTypes table from the struct a caller would otherwise have unmarshalled the
