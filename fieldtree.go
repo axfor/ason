@@ -1,6 +1,6 @@
 package ason
 
-import "github.com/axfor/ason/internal/fieldtree"
+import "github.com/axfor/ason/fieldtree"
 
 // The field tree and the type map are built by reflection over a caller's struct, which is a self-contained job
 // with no knowledge of the scanner -- so it lives in internal/fieldtree. These aliases keep it reachable under the
