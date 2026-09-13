@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 400" width="860" height="400"
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 424" width="860" height="424"
      role="img" aria-labelledby="title desc">
   <title id="title">ason architecture</title>
   <desc id="desc">Three layers in one pass. The scanner (layer 1) reads the input chunk by chunk and asks
@@ -12,7 +12,7 @@
     /* Concrete colours per class, not CSS variables: renderers outside a browser
        (librsvg, resvg) do not resolve var() and would paint the whole figure flat.
        One dark palette on purpose: the figure paints its own deep-black ground in every theme. */
-    .bg   { fill:#0d1117 }
+    .bg   { fill:#000000 }
     .box  { fill:#161b22; stroke:#30363d; stroke-width:1 }
     .band { fill:#1c1710; stroke:#d29922; stroke-width:1; stroke-dasharray:5 4 }
     text  { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
@@ -41,7 +41,7 @@
     <marker id="aInk" viewBox="0 0 10 8" refX="9" refY="4" markerWidth="7" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 4 L0 8 z" class="ink"/></marker>
   </defs>
 
-  <rect class="bg" x="0" y="0" width="860" height="400"/>
+  <rect class="bg" x="0" y="0" width="860" height="424"/>
 
   <!-- layer 2: protocol -->
   <rect class="box" x="96" y="28" width="236" height="100" rx="9"/>

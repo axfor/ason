@@ -1,5 +1,17 @@
 # ason design notes
 
+## Where the code is
+
+    ason          the public surface: type aliases and forwards, nothing else (ason.go)
+    ason/engine   the scanner, the Transformer and everything that reads its state
+    ason/fieldtree  reflection over a caller's struct, used to decide what a value may be
+    ason/simd     the vector scan, preferring simd/archsimd and hand-writing only what it cannot
+
+The split follows one rule: a package boundary goes where the state does not cross it. The engine's four largest
+files read and write the Transformer's private fields 576 times between them, so they are one package; the field
+tree and the vector scan answer questions of their own and are separate.
+
+
 ## The problem
 
 Rewriting JSON usually means parsing the whole document into objects, changing it, and serialising it again.
@@ -21,7 +33,7 @@ Three constraints shape everything else:
 ## Layers
 
 ```
-input bytes ──► scanner (engine.go) ──► actions ──► lazy writer (writer.go) ──► output bytes
+input bytes ──► scanner (engine/engine.go) ──► actions ──► lazy writer (engine/writer.go) ──► output bytes
                      │  OnKey / OnElem / OnStart / OnValue / OnPrefix / OnLeave / Tail
                      ▼
                 Protocol (implemented by the caller)

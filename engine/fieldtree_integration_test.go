@@ -1,4 +1,9 @@
-package ason
+package engine
+
+// Moved here from the ason package: every method these tests drive -- SetFieldTree, SetFieldTypes, Write, Finish,
+// Unsupported -- belongs to this package, so the tests belong with it. The fixtures sample, inner, embedded and
+// customScalar are not repeated: fixtures_test.go already carries them, having been split out of this very file
+// when the benchmarks needed them on this side of the boundary.
 
 import (
 	"encoding/json"
@@ -14,13 +19,6 @@ import (
 // treeRoot, inner and sample are copied from internal/fieldtree's own tests rather than shared: the two sides
 // test the same shapes from opposite ends, and a test fixture that spans a package boundary would have to be
 // exported from a _test.go file, which Go does not allow anyway.
-
-type customScalar struct{ n int }
-
-type embedded struct {
-	Store    bool `json:"store,omitempty"`
-	Untagged string
-}
 
 type treeInner struct {
 	A int             `json:"a"`
@@ -42,30 +40,6 @@ type treeRoot struct {
 	Ptr   *treeInner  `json:"ptr"`
 	List  []treeInner `json:"list"`
 	Free  any         `json:"free"`
-}
-
-type inner struct {
-	A int `json:"a"`
-}
-
-type sample struct {
-	embedded
-	Str      string                 `json:"str,omitempty"`
-	Num      float64                `json:"num,omitempty"`
-	Int      int                    `json:"int,omitempty"`
-	Flag     bool                   `json:"flag,omitempty"`
-	Strs     []string               `json:"strs,omitempty"`
-	Objs     []inner                `json:"objs,omitempty"`
-	Obj      map[string]interface{} `json:"obj,omitempty"`
-	MapInt   map[string]int         `json:"map_int,omitempty"`
-	Struct   inner                  `json:"struct,omitempty"`
-	Ptr      *inner                 `json:"ptr,omitempty"`
-	Any      interface{}            `json:"any,omitempty"`
-	Raw      json.RawMessage        `json:"raw,omitempty"`
-	Custom   customScalar           `json:"custom,omitempty"`
-	Bytes    []byte                 `json:"bytes,omitempty"`
-	Skipped  string                 `json:"-"`
-	unexport string
 }
 
 func TestSetFieldTreeNeverRejectsWhatUnmarshalAccepts(t *testing.T) {
