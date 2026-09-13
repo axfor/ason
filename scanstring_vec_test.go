@@ -6,16 +6,18 @@ import (
 	"bytes"
 	"math/rand"
 	"testing"
+
+	"github.com/axfor/ason/simd"
 )
 
-// The vector scan -- NEON on arm64, SSE2 on amd64 -- is an accelerator in front of scanStringBody's contract, not a
+// The vector scan in internal/simd is an accelerator in front of scanStringBody's contract, not a
 // second definition of it, so what it owes the reference is narrower than equality: it may stop short (leaving the tail to the loops after it) but
 // it must never run past the first terminator, never stop with a full sixteen bytes still to look at, and never
 // return a position that is not a terminator. Checked at every alignment and length around the vector width, with
 // each of the three terminators at each position, and then on random bytes including every high byte.
 func TestVectorScanHoldsTheContract(t *testing.T) {
 	check := func(p []byte, start int) {
-		got := scanStringBodyVec(p, start)
+		got := simd.ScanStringBody(p, start)
 		want := scanStringBodyRef(p, start)
 		if got > want {
 			t.Fatalf("overshot: len=%d start=%d got %d want<=%d\n%q", len(p), start, got, want, p)

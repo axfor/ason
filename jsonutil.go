@@ -5,6 +5,8 @@ import (
 	"math/bits"
 	"strconv"
 	"unicode/utf8"
+
+	"github.com/axfor/ason/simd"
 )
 
 const hexDigits = "0123456789abcdef"
@@ -436,14 +438,14 @@ func scanStringBody(p []byte, i int) int {
 			return i + bits.TrailingZeros64(m)>>3
 		}
 		i += 8
-		if vectorStringScan && i-start >= vectorStringMin {
+		if simd.HasVector && i-start >= vectorStringMin {
 			// Still going after this many bytes, so this is a long value -- a base64 payload, a long message -- and
-			// the vector scan takes over for the rest of it: sixteen bytes a step instead of eight, measured at +32%
+			// the vector scan takes over for the rest of it -- the simd package picks the width -- measured at +32%
 			// at 64KB and +129% at a megabyte. The length of the string is not known on entry (only how much of the
 			// chunk is left, which says nothing about where the closing quote is), and a body's strings average six
 			// bytes, so the word loop above is what decides: a short value never reaches this, and a long one pays
-			// these few words once. It returns where it stopped when fewer than sixteen bytes remain.
-			i = scanStringBodyVec(p, i)
+			// these few words once. It returns where it stopped when fewer than one vector's worth remains.
+			i = simd.ScanStringBody(p, i)
 			break
 		}
 	}

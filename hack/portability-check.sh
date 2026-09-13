@@ -20,11 +20,11 @@ for t in $targets; do
     fail=1
     continue
   fi
-  sel=$(GOOS=$os GOARCH=$arch go list -f '{{join .GoFiles " "}}' . | tr ' ' '\n' | grep '^scanstring_' | tr '\n' ' ')
+  sel=$(GOOS=$os GOARCH=$arch go list -f '{{join .GoFiles " "}}' ./simd | tr ' ' '\n' | grep -E '^(archsimd|asm|generic)' | sort | tr '\n' ' ')
   case "$arch" in
-    arm64) want="scanstring_neon_arm64.go " ;;
-    amd64) want="scanstring_sse2_amd64.go " ;;
-    *)     want="scanstring_generic.go " ;;
+    arm64) want="asm_neon_arm64.go " ;;
+    amd64) want="asm_avx2_amd64.go asm_sse2_amd64.go " ;;
+    *)     want="generic.go " ;;
   esac
   if [ "$sel" != "$want" ]; then
     echo "!! $t selected [$sel], expected [$want]"
@@ -40,8 +40,8 @@ for t in $targets; do
     fail=1
     continue
   fi
-  sel=$(GOOS=$os GOARCH=$arch go list -tags purego -f '{{join .GoFiles " "}}' . | tr ' ' '\n' | grep '^scanstring_' | tr '\n' ' ')
-  if [ "$sel" != "scanstring_generic.go " ]; then
+  sel=$(GOOS=$os GOARCH=$arch go list -tags purego -f '{{join .GoFiles " "}}' ./simd | tr ' ' '\n' | grep -E '^(archsimd|asm|generic)' | sort | tr '\n' ' ')
+  if [ "$sel" != "generic.go " ]; then
     echo "!! $t with -tags purego selected [$sel], expected the generic scan"
     fail=1
   fi
@@ -56,10 +56,11 @@ for lvl in v1 v2 v3 v4; do
   fi
 done
 
-# With GOEXPERIMENT=simd, every architecture that can take simd/archsimd does: amd64 and arm64 in place of their
-# hand-written assembly, and wasm in place of the word-at-a-time loop, which is new -- before Go 1.27 the wasm
-# target emitted no vector instructions at all. They extract the index three different ways, because ToBits is
-# defined only on amd64: arm64 reduces with VUMINV and wasm stores the mask and reads it back as two uint64s.
+# With GOEXPERIMENT=simd, amd64 and wasm take simd/archsimd: amd64 in place of its AVX2 assembly (the SSE2 half
+# stays, being below archsimd's AVX2 floor), and wasm in place of the word-at-a-time loop, which is new -- before
+# Go 1.27 that target emitted no vector instructions at all. arm64 keeps its assembly in both configurations: the
+# archsimd version works there and emits the same vector sequence, but its loop body carries six more scalar
+# instructions per sixteen bytes and measured 8-11% slower on long values. Reason recorded in asm_neon_arm64.go.
 for t in $targets; do
   os=${t%/*}
   arch=${t#*/}
@@ -68,12 +69,12 @@ for t in $targets; do
     fail=1
     continue
   fi
-  sel=$(GOEXPERIMENT=simd GOOS=$os GOARCH=$arch go list -f '{{join .GoFiles " "}}' . | tr ' ' '\n' | grep '^scanstring_' | tr '\n' ' ')
+  sel=$(GOEXPERIMENT=simd GOOS=$os GOARCH=$arch go list -f '{{join .GoFiles " "}}' ./simd | tr ' ' '\n' | grep -E '^(archsimd|asm|generic)' | sort | tr '\n' ' ')
   case "$arch" in
-    arm64) want="scanstring_simd_arm64.go " ;;
-    amd64) want="scanstring_simd_amd64.go " ;;
-    wasm)  want="scanstring_simd_wasm.go " ;;
-    *)     want="scanstring_generic.go " ;;
+    arm64) want="asm_neon_arm64.go " ;;
+    amd64) want="archsimd_amd64.go asm_sse2_amd64.go " ;;
+    wasm)  want="archsimd_wasm.go " ;;
+    *)     want="generic.go " ;;
   esac
   if [ "$sel" != "$want" ]; then
     echo "!! $t with GOEXPERIMENT=simd selected [$sel], expected [$want]"
@@ -92,8 +93,8 @@ for t in $targets; do
     fail=1
     continue
   fi
-  sel=$(GOEXPERIMENT=simd GOOS=$os GOARCH=$arch go list -tags purego -f '{{join .GoFiles " "}}' . | tr ' ' '\n' | grep '^scanstring_' | tr '\n' ' ')
-  if [ "$sel" != "scanstring_generic.go " ]; then
+  sel=$(GOEXPERIMENT=simd GOOS=$os GOARCH=$arch go list -tags purego -f '{{join .GoFiles " "}}' ./simd | tr ' ' '\n' | grep -E '^(archsimd|asm|generic)' | sort | tr '\n' ' ')
+  if [ "$sel" != "generic.go " ]; then
     echo "!! $t with GOEXPERIMENT=simd and -tags purego selected [$sel], expected the generic scan"
     fail=1
   fi
