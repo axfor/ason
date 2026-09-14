@@ -22,7 +22,7 @@ type Transformer struct {
 	depth  int
 	frames []frame
 	path   []seg
-	keyBuf []byte
+	keyAt  int // where the current key's content starts in kvRaw
 	keyEsc bool
 
 	pend    Action

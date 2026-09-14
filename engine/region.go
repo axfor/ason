@@ -424,8 +424,13 @@ func (t *Transformer) endRegion() {
 // onKeyDone: the key is complete, dispatch OnKey.
 func (t *Transformer) onKeyDone() {
 	var key string
+	// The key's content is the stretch of kvRaw between the quotes: keyAt was recorded just after the opening one
+	// went in, and scan appends the closing one immediately before calling this, so it is the last byte. This is
+	// the only caller -- a Defer replay dispatches OnKey directly and never arrives here, which matters because
+	// its kvRaw holds a whole [ws]"key"[ws]:[ws] and its last byte is not a quote.
+	kb := t.kvRaw[t.keyAt : len(t.kvRaw)-1]
 	if t.keyEsc { // an escaped key: decode as JSON before dispatching (kvRaw still holds the original)
-		k, ok := decodeKey(t.keyBuf)
+		k, ok := decodeKey(kb)
 		if !ok {
 			t.BailCode(ErrSyntax, "invalid escape in key")
 			return
@@ -435,11 +440,11 @@ func (t *Transformer) onKeyDone() {
 		if t.keys == nil {
 			t.keys = NewKeyCache()
 		}
-		slot := &t.keys[hashKey(t.keyBuf)&(keyCacheSize-1)]
-		if *slot == string(t.keyBuf) { // the comparison does not allocate
+		slot := &t.keys[hashKey(kb)&(keyCacheSize-1)]
+		if *slot == string(kb) { // the comparison does not allocate
 			key = *slot
 		} else {
-			key = string(t.keyBuf)
+			key = string(kb)
 			*slot = key
 		}
 	}

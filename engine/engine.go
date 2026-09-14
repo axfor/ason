@@ -132,7 +132,6 @@ scan:
 				case 2:
 					t.hexN = 4
 				}
-				t.keyBuf = append(t.keyBuf, c)
 				t.kvRaw = append(t.kvRaw, c)
 				i++
 				continue
@@ -143,7 +142,6 @@ scan:
 					goto bail
 				}
 				t.hexN--
-				t.keyBuf = append(t.keyBuf, c)
 				t.kvRaw = append(t.kvRaw, c)
 				i++
 				continue
@@ -155,13 +153,11 @@ scan:
 					continue
 				}
 				if j > i {
-					t.keyBuf = append(t.keyBuf, p[i:j]...)
 					t.kvRaw = append(t.kvRaw, p[i:j]...)
 					i = j
 					continue
 				}
 			} else if j := scanStringBody(p, i); j > i { // append plain bytes as a run
-				t.keyBuf = append(t.keyBuf, p[i:j]...)
 				t.kvRaw = append(t.kvRaw, p[i:j]...)
 				i = j
 				continue
@@ -173,7 +169,6 @@ scan:
 			if c == '\\' {
 				t.esc = true
 				t.keyEsc = true
-				t.keyBuf = append(t.keyBuf, c)
 				t.kvRaw = append(t.kvRaw, c)
 				i++
 				continue
@@ -392,9 +387,12 @@ scan:
 					t.st = sInKey
 					t.esc = false
 					t.keyEsc = false
-					t.keyBuf = t.keyBuf[:0]
 					t.kvRaw = append(t.kvRaw[:0], t.wsRaw...)
 					t.kvRaw = append(t.kvRaw, '"')
+					// The key's content begins here. It used to be accumulated a second time into its own buffer,
+					// which meant every byte of every key was appended twice -- two growslice calls, two write
+					// barriers, two memmoves. onKeyDone reads it back out of kvRaw instead.
+					t.keyAt = len(t.kvRaw)
 					t.wsRaw = t.wsRaw[:0]
 					f.ph = phColon
 					i++
