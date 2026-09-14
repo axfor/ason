@@ -21,13 +21,27 @@ func (t *Transformer) scan(p []byte) int {
 		rs = 0
 	}
 	i := 0
-	if t.replaying == 0 {
-		defer func() { // on a bail, pin the offset to the failing byte (a bail inside a callback takes the current scan position)
-			if t.dead {
-				t.fixOffset(t.scanBase + int64(i))
-			}
-		}()
-	}
+	// On a bail the offset is pinned to the failing byte, at the tail of this function. It used to be a deferred
+	// closure, which read i at return the same way the tail does now -- but the closure captured i, and a captured
+	// variable cannot live in a register, so every iteration of the loop below reloaded i and len(p) from the
+	// frame: 660 of scan's instructions touched it before this change, and the loop header did nothing but reload.
+	//
+	// The tail re-reads t.replaying instead of capturing it here, which is what the defer effectively did at
+	// registration. Keeping a bool live from here to the return costs more than the decision is worth: it is live
+	// across every call in the loop, and Go saves nothing in registers across a call, so it was spilled and
+	// reloaded for 64 extra instructions. Re-reading is the same answer because replayKV brackets its scan call
+	// with ++ and -- and has no return in between, so a nested scan sees > 0 throughout and the outer one sees
+	// the value it started with.
+	//
+	// The guard itself covers a nested scan that dies inside that window, which would otherwise pin an index into
+	// the replay buffer onto the outer error. No test reaches it: replaying makes no protocol callbacks at all --
+	// replayKV takes OnKey's answer before the ++, and the deferred value is re-emitted as raw bytes -- so only an
+	// engine-internal bail can land there, and attempts to provoke one through a cap or budget overflow did not
+	// get in. Reachable in principle rather than demonstrated, then, which is also why emitRegionAt and flush
+	// carry the same t.replaying test; dropping this one breaks nothing the suite can see.
+	//
+	// There is exactly one return, so the tail is the only exit to cover. A panic through here no longer pins,
+	// which nothing observes: the package never recovers.
 scan:
 	for i < len(p) && !t.dead {
 		if t.suspendReq { // a callback asked to stop: everything from here on is kept for Resume
@@ -418,6 +432,9 @@ scan:
 	}
 	if rs >= 0 && t.regOpen && !t.dead {
 		t.flush(p, rs, len(p))
+	}
+	if t.replaying == 0 && t.dead { // after the flush above, where the defer this replaces would have run
+		t.fixOffset(t.scanBase + int64(i))
 	}
 	return i
 }
